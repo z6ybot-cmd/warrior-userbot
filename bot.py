@@ -32,7 +32,6 @@ DEFAULT_LPA = "LPA:1$hfy.prod.ondemandconnectivity.com$FA1BEB0FB081104C79BAD7E29
 DEFAULT_BARCODE = f"https://api.qrserver.com/v1/create-qr-code/?data={DEFAULT_LPA}&size=500x500"
 
 CHANNEL_ID = -1003968712197
-
 DB_NAME = "esim_market.db"
 
 # الشريحة الموحدة لجميع الطلبات
@@ -59,7 +58,6 @@ LANGS = {
         'btn_dealer_vf': "باقات Vodafone تجار (10 شرائح جملة)",
         'btn_dealer_hf': "باقات Holafly تجار (10 شرائح جملة)",
         'btn_dealer_maya': "باقات Maya تجار (10 شرائح جملة)",
-        'btn_countries': "الدول المدعومة وشبكات التغطية",
         'btn_cart': "سلة المشتريات",
         'btn_wallet': "محفظتي الشخصية",
         'btn_transactions': "سجل المعاملات المالية",
@@ -84,9 +82,7 @@ LANGS = {
         'verify_sent': "<blockquote>⧺︰ <b>تم استلام إيصالك بنجاح وجاري مراجعته وإضافة الرصيد آلياً فور التحقق!</b></blockquote>",
         'support_prompt': "<blockquote>⧺︰ <b>نظام تذاكر الدعم الفني المباشر والاحترافي</b></blockquote>\n\n> ⧺︰ <b>اكتب رسالتك أو استفسارك وسيتم تحويله لفريق المختصين فوراً:</b>",
         'support_sent': "<blockquote>⧺︰ <b>تم إرسال تذكرتك بنجاح تام وسيتم الرد عليك في أقرب وقت ممكن.</b></blockquote>",
-        'btn_verify_now': "التحقق من الدفع وإرسال الإيصال الآن",
-        'prev_page': "السابق",
-        'next_page': "التالي"
+        'btn_verify_now': "التحقق من الدفع وإرسال الإيصال الآن"
     },
     'en': {
         'welcome': """<blockquote>⧺︰ <b>Welcome to Aura eSIM Elite Gateway</b></blockquote>
@@ -104,7 +100,6 @@ LANGS = {
         'btn_dealer_vf': "Vodafone Dealer Plans (10 eSIMs)",
         'btn_dealer_hf': "Holafly Dealer Plans (10 eSIMs)",
         'btn_dealer_maya': "Maya Dealer Plans (10 eSIMs)",
-        'btn_countries': "Supported Countries & Coverage",
         'btn_cart': "Shopping Cart",
         'btn_wallet': "My Personal Wallet",
         'btn_transactions': "Transactions History",
@@ -129,9 +124,7 @@ LANGS = {
         'verify_sent': "<blockquote>⧺︰ <b>Your receipt has been received successfully. Processing and crediting balance!</b></blockquote>",
         'support_prompt': "<blockquote>⧺︰ <b>Direct Support Ticket System</b></blockquote>\n\n> ⧺︰ <b>Send your message or inquiry now:</b>",
         'support_sent': "<blockquote>⧺︰ <b>Your support ticket has been sent successfully. We will reply soon!</b></blockquote>",
-        'btn_verify_now': "Verify Payment Now & Send Receipt",
-        'prev_page': "Previous",
-        'next_page': "Next"
+        'btn_verify_now': "Verify Payment Now & Send Receipt"
     }
 }
 
@@ -139,7 +132,7 @@ WARRANTY_POLICY_TEXT = {
     'ar': """<blockquote>⧺︰ <b>سياسات ومميزات الشرائح حسب المزود (Aura eSIM Elite):</b>
 ⧺︰ <b>شرائح هولافلاي (Holafly): إنترنت لا محدود بالكامل وبدون أي سياسة استخدام عادل (True Unlimited Data).</b>
 ⧺︰ <b>شرائح مايا (Maya): تخضع لسياسة الاستخدام العادل (5 جيجا يومياً بسرعة فائقة 5G، ثم إنترنت لا محدود بسرعات مخفضة).</b>
-⧺︰ <b>شرائح فودافون (Vodafone): إنترنت فائق السرعة مع دقائق اتصال محلية ودولية.</b>
+⧺︰ <b>شرائح فودافون (Vodafone): إنترنت فائق السرعة مع دقائق اتصال محلية ودولية رسمية.</b>
 ⧺︰ <b>ملاحظة: باقات Maya وباقات Holafly مخصصة للإنترنت فقط بدون رقم اتصال.</b></blockquote>
 
 <blockquote>⧺︰ <b>باقة الضمان الذهبي والدعم الفني:</b>
@@ -189,14 +182,13 @@ def clear_session(uid, key):
 client = TelegramClient('esim_market', API_ID, API_HASH)
 
 # ==========================================
-# 4. إعداد قاعدة البيانات وتثبيت الجداول
+# 4. إعداد قاعدة البيانات وتحديث الدقائق
 # ==========================================
 async def init_db():
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute("PRAGMA journal_mode=WAL;")
         await db.execute("PRAGMA synchronous=NORMAL;")
 
-        # جدول الباقات الكامل
         await db.execute('''CREATE TABLE IF NOT EXISTS esims (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             category TEXT,
@@ -211,7 +203,6 @@ async def init_db():
             description TEXT
         )''')
 
-        # جدول المحافظ
         await db.execute('''CREATE TABLE IF NOT EXISTS wallets (
             user_id INTEGER PRIMARY KEY,
             balance REAL DEFAULT 0,
@@ -219,7 +210,6 @@ async def init_db():
             created_date TEXT
         )''')
 
-        # جدول المعاملات
         await db.execute('''CREATE TABLE IF NOT EXISTS wallet_transactions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER,
@@ -230,7 +220,6 @@ async def init_db():
             date TEXT
         )''')
 
-        # جدول طلبات الإيداع المالي للتحقق
         await db.execute('''CREATE TABLE IF NOT EXISTS deposit_requests (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER,
@@ -240,7 +229,6 @@ async def init_db():
             date TEXT
         )''')
 
-        # جدول الطلبات المكتملة
         await db.execute('''CREATE TABLE IF NOT EXISTS orders (
             order_id TEXT PRIMARY KEY,
             user_id INTEGER,
@@ -254,7 +242,6 @@ async def init_db():
             created_date TEXT
         )''')
 
-        # سلة المشتريات
         await db.execute('''CREATE TABLE IF NOT EXISTS cart (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER,
@@ -263,7 +250,6 @@ async def init_db():
             price REAL
         )''')
 
-        # إعدادات المستخدمين
         await db.execute('''CREATE TABLE IF NOT EXISTS users_settings (
             user_id INTEGER PRIMARY KEY,
             lang TEXT DEFAULT 'ar',
@@ -271,7 +257,6 @@ async def init_db():
             is_dealer_tier INTEGER DEFAULT 0
         )''')
 
-        # مفاتيح التجار API
         await db.execute('''CREATE TABLE IF NOT EXISTS dealer_api_keys (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER UNIQUE,
@@ -279,12 +264,10 @@ async def init_db():
             created_date TEXT
         )''')
 
-        # المشرفين والمحظورين
         await db.execute('''CREATE TABLE IF NOT EXISTS admins (user_id INTEGER PRIMARY KEY)''')
         await db.execute('''CREATE TABLE IF NOT EXISTS bans (user_id INTEGER PRIMARY KEY)''')
         await db.execute('''CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)''')
 
-        # جدول طرق وشبكات الدفع القابل للإدارة بالكامل من الأدمن
         await db.execute('''CREATE TABLE IF NOT EXISTS payment_networks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             network_key TEXT UNIQUE,
@@ -297,7 +280,6 @@ async def init_db():
         if DEV_ID:
             await db.execute("INSERT OR IGNORE INTO admins (user_id) VALUES (?)", (DEV_ID,))
 
-        # ملء شبكات الدفع الأولية
         default_nets = [
             ('bybit_id', 'Bybit ID / Pay ID', '', '159349409'),
             ('binance_id', 'Binance ID / Pay ID', '', '159349409'),
@@ -309,46 +291,51 @@ async def init_db():
             await db.execute('''INSERT OR IGNORE INTO payment_networks 
                 (network_key, network_name, address, binance_id) VALUES (?, ?, ?, ?)''', (k, n, a, b_id))
 
-        # ملء الباقات الكاملة (1، 3، 6، 12 شهر لجميع المزودين وباقات الجملة)
+        # الباقات الكاملة مع تحديث دقائق فودافون الدقيق
         full_plans = [
-            # Vodafone
+            # Vodafone (المعدلة بالدقائق المطلوبة)
             ('vodafone', 'Vodafone Unlimited 1 Month', 'vf_1m', 20.0, 850, 1, 5000, 1, 0, 'بيانات لا محدودة + 850 دقيقة اتصال'),
-            ('vodafone', 'Vodafone Unlimited 3 Months', 'vf_3m', 35.0, 2500, 3, 5000, 1, 0, 'بيانات لا محدودة + 2500 دقيقة اتصال'),
-            ('vodafone', 'Vodafone Unlimited 6 Months', 'vf_6m', 60.0, 5000, 6, 5000, 1, 0, 'بيانات لا محدودة + 5000 دقيقة اتصال'),
-            ('vodafone', 'Vodafone Unlimited 12 Months', 'vf_12m', 80.0, 10000, 12, 5000, 1, 0, 'بيانات لا محدودة + 10000 دقيقة اتصال'),
+            ('vodafone', 'Vodafone Unlimited 3 Months', 'vf_3m', 35.0, 1600, 3, 5000, 1, 0, 'بيانات لا محدودة + 1600 دقيقة اتصال'),
+            ('vodafone', 'Vodafone Unlimited 6 Months', 'vf_6m', 60.0, 2300, 6, 5000, 1, 0, 'بيانات لا محدودة + 2300 دقيقة اتصال'),
+            ('vodafone', 'Vodafone Unlimited 12 Months', 'vf_12m', 80.0, 3700, 12, 5000, 1, 0, 'بيانات لا محدودة + 3700 دقيقة اتصال'),
+            
             # Holafly
             ('holafly', 'Holafly Unlimited 1 Month', 'hf_1m', 15.0, 0, 1, 5000, 1, 0, 'هولافلاي إنترنت لا محدود بالكامل - بدون استخدام عادل'),
             ('holafly', 'Holafly Unlimited 3 Months', 'hf_3m', 30.0, 0, 3, 5000, 1, 0, 'هولافلاي إنترنت لا محدود بالكامل - بدون استخدام عادل'),
             ('holafly', 'Holafly Unlimited 6 Months', 'hf_6m', 50.0, 0, 6, 5000, 1, 0, 'هولافلاي إنترنت لا محدود بالكامل - بدون استخدام عادل'),
             ('holafly', 'Holafly Unlimited 12 Months', 'hf_12m', 70.0, 0, 12, 5000, 1, 0, 'هولافلاي إنترنت لا محدود بالكامل - بدون استخدام عادل'),
+            
             # Maya
             ('maya', 'Maya Unlimited 1 Month', 'maya_1m', 12.0, 0, 1, 5000, 1, 0, 'مايا بيانات لا محدودة - تخضع للاستخدام العادل 5 جيجا يومياً'),
             ('maya', 'Maya Unlimited 3 Months', 'maya_3m', 25.0, 0, 3, 5000, 1, 0, 'مايا بيانات لا محدودة - تخضع للاستخدام العادل 5 جيجا يومياً'),
             ('maya', 'Maya Unlimited 6 Months', 'maya_6m', 45.0, 0, 6, 5000, 1, 0, 'مايا بيانات لا محدودة - تخضع للاستخدام العادل 5 جيجا يومياً'),
             ('maya', 'Maya Unlimited 12 Months', 'maya_12m', 65.0, 0, 12, 5000, 1, 0, 'مايا بيانات لا محدودة - تخضع للاستخدام العادل 5 جيجا يومياً'),
+            
             # Wholesale (Dealers 10x)
             ('dealer_hf', 'Holafly 10 شرائح - 1 شهر', 'dealer_hf_1m', 100.0, 0, 1, 5000, 10, 1, 'عرض 10 شرائح هولافلاي لمدة 1 شهر'),
             ('dealer_hf', 'Holafly 10 شرائح - 3 أشهر', 'dealer_hf_3m', 130.0, 0, 3, 5000, 10, 1, 'عرض 10 شرائح هولافلاي لمدة 3 أشهر'),
             ('dealer_hf', 'Holafly 10 شرائح - 6 أشهر', 'dealer_hf_6m', 150.0, 0, 6, 5000, 10, 1, 'عرض 10 شرائح هولافلاي لمدة 6 أشهر'),
             ('dealer_hf', 'Holafly 10 شرائح - 12 شهر', 'dealer_hf_12m', 180.0, 0, 12, 5000, 10, 1, 'عرض 10 شرائح هولافلاي لمدة 12 شهر'),
-            ('dealer_vf', 'Vodafone 10 شرائح - 1 شهر', 'dealer_vf_1m', 120.0, 850, 1, 5000, 10, 1, 'عرض 10 شرائح فودافون لمدة 1 شهر'),
-            ('dealer_vf', 'Vodafone 10 شرائح - 3 أشهر', 'dealer_vf_3m', 150.0, 2500, 3, 5000, 10, 1, 'عرض 10 شرائح فودافون لمدة 3 أشهر'),
-            ('dealer_vf', 'Vodafone 10 شرائح - 6 أشهر', 'dealer_vf_6m', 170.0, 5000, 6, 5000, 10, 1, 'عرض 10 شرائح فودافون لمدة 6 أشهر'),
-            ('dealer_vf', 'Vodafone 10 شرائح - 12 شهر', 'dealer_vf_12m', 220.0, 10000, 12, 5000, 10, 1, 'عرض 10 شرائح فودافون لمدة 12 شهر'),
+            ('dealer_vf', 'Vodafone 10 شرائح - 1 شهر', 'dealer_vf_1m', 120.0, 850, 1, 5000, 10, 1, 'عرض 10 شرائح فودافون لمدة 1 شهر (850 دقيقة لكل شريحة)'),
+            ('dealer_vf', 'Vodafone 10 شرائح - 3 أشهر', 'dealer_vf_3m', 150.0, 1600, 3, 5000, 10, 1, 'عرض 10 شرائح فودافون لمدة 3 أشهر (1600 دقيقة لكل شريحة)'),
+            ('dealer_vf', 'Vodafone 10 شرائح - 6 أشهر', 'dealer_vf_6m', 170.0, 2300, 6, 5000, 10, 1, 'عرض 10 شرائح فودافون لمدة 6 أشهر (2300 دقيقة لكل شريحة)'),
+            ('dealer_vf', 'Vodafone 10 شرائح - 12 شهر', 'dealer_vf_12m', 220.0, 3700, 12, 5000, 10, 1, 'عرض 10 شرائح فودافون لمدة 12 شهر (3700 دقيقة لكل شريحة)'),
             ('dealer_maya', 'Maya 10 شرائح - 1 شهر', 'dealer_maya_1m', 90.0, 0, 1, 5000, 10, 1, 'عرض 10 شرائح مايا لمدة 1 شهر'),
             ('dealer_maya', 'Maya 10 شرائح - 3 أشهر', 'dealer_maya_3m', 120.0, 0, 3, 5000, 10, 1, 'عرض 10 شرائح مايا لمدة 3 أشهر'),
             ('dealer_maya', 'Maya 10 شرائح - 6 أشهر', 'dealer_maya_6m', 140.0, 0, 6, 5000, 10, 1, 'عرض 10 شرائح مايا لمدة 6 أشهر'),
             ('dealer_maya', 'Maya 10 شرائح - 12 شهر', 'dealer_maya_12m', 160.0, 0, 12, 5000, 10, 1, 'عرض 10 شرائح مايا لمدة 12 شهر')
         ]
         for row in full_plans:
-            await db.execute('''INSERT OR IGNORE INTO esims 
+            await db.execute('''INSERT INTO esims 
                 (category, name, code_key, price_usd, minutes, months, stock, min_qty, is_dealer, description)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', row)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(code_key) DO UPDATE SET 
+                minutes=excluded.minutes, description=excluded.description, price_usd=excluded.price_usd''', row)
 
         await db.commit()
 
 # ==========================================
-# 5. دوال المساعدة وقواعد البيانات
+# 5. دوال المساعدة
 # ==========================================
 async def is_admin(uid):
     if uid == DEV_ID: return True
@@ -411,7 +398,7 @@ async def get_payment_details_text(amount):
             nets = await cur.fetchall()
 
     text = f"<blockquote>💳 <b>بوابة الدفع الشاملة لمتجر Aura eSIM</b>\n💰 <b>المبلغ المطلوب تحويله:</b> <code>${amount:.2f}</code></blockquote>\n\n"
-    text += "<blockquote>⧺︰ <b>إليك كافة عناوين ومعرفات الدفع المتاحة حالياً للتحويل:</b></blockquote>\n\n"
+    text += "<blockquote>⧺︰ <b>إليك كافة عناوين ومعرفات الدفع المتاحة للتحويل:</b></blockquote>\n\n"
     for idx, (name, addr, b_id) in enumerate(nets, 1):
         text += f"<b>{idx}. {name}</b>\n"
         if b_id:
@@ -419,7 +406,7 @@ async def get_payment_details_text(amount):
         if addr:
             text += f"• <code>Address:</code> <code>{addr}</code>\n"
         text += "───────────────────\n"
-    text += "\n> ⧺︰ <b>قم بالتحويل عبر إحدى الطرق أعلاه، ثم اضغط على زر التحقق أدناه لتأكيد طلبك.</b>"
+    text += "\n> ⧺︰ <b>قم بالتحويل عبر أي شبكة، ثم اضغط على زر التحقق أدناه لتأكيد طلبك.</b>"
     return text
 
 async def build_main_menu(uid):
@@ -449,7 +436,7 @@ async def build_main_menu(uid):
     return t['welcome'], btn
 
 # ==========================================
-# 6. معالجات الأحداث والأزرار
+# 6. معالجات الأحداث
 # ==========================================
 @client.on(events.NewMessage(pattern='/start'))
 async def on_start(event):
@@ -461,16 +448,6 @@ async def on_start(event):
         return
     user_rate_limits[uid] = now
 
-    # إشعار الدخول للمطور
-    try:
-        u = await event.sender
-        uname = f"@{u.username}" if u and u.username else "بدون معرف"
-        fname = u.first_name if u else "مستخدم"
-        notif = f"🚨 <b>دخول مستخدم جديد للبوت!</b>\n\n• الاسم: {fname}\n• اليوزر: {uname}\n• الآيدي: <code>{uid}</code>\n• الوقت: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-        await client.send_message(DEV_ID, notif, parse_mode='html')
-    except: pass
-
-    # نظام الإحالة (Referral)
     args = event.text.split()
     if len(args) > 1 and args[1].startswith('ref'):
         try:
@@ -493,7 +470,7 @@ async def on_callback(event):
     if await is_banned(uid): return
 
     now = time.time()
-    if uid in user_rate_limits and now - user_rate_limits[uid] < 0.5:
+    if uid in user_rate_limits and now - user_rate_limits[uid] < 0.4:
         return
     user_rate_limits[uid] = now
 
@@ -501,7 +478,7 @@ async def on_callback(event):
     lang = await get_user_lang(uid)
     t = LANGS.get(lang, LANGS['ar'])
 
-    # ------------------ الملاحة واللغات ------------------
+    # الملاحة العامة
     if data == 'main':
         text, btn = await build_main_menu(uid)
         await event.edit(text, buttons=btn, parse_mode='html')
@@ -519,7 +496,7 @@ async def on_callback(event):
         text, btn = await build_main_menu(uid)
         await event.edit(text, buttons=btn, parse_mode='html')
 
-    # ------------------ قسم الأفراد ------------------
+    # قسم الأفراد
     elif data == 'personal_section':
         btn = [
             [Button.inline(t['btn_vodafone'], b'cat_vodafone')],
@@ -538,46 +515,99 @@ async def on_callback(event):
         btn = []
         for pid, name, price, m, mins in plans:
             m_label = 'شهر' if lang == 'ar' else 'M'
-            btn.append([Button.inline(f"{name} ({m} {m_label}) - ${price:.0f}", f'show_plan_{pid}'.encode())])
+            min_info = f" ({mins} دقيقة)" if mins > 0 else ""
+            btn.append([Button.inline(f"{name}{min_info} - ${price:.0f}", f'show_plan_{pid}_1'.encode())])
         btn.append([Button.inline(t['back'], b'personal_section')])
 
         policy = WARRANTY_POLICY_TEXT.get(lang, WARRANTY_POLICY_TEXT['ar'])
         title_map = {'vodafone': t['btn_vodafone'], 'holafly': t['btn_holafly'], 'maya': t['btn_maya']}
         await event.edit(f"<blockquote>⧺︰ <b>{title_map[cat]}</b></blockquote>\n\n{policy}\n\n> ⧺︰ <b>اختر المدة المناسبة لك:</b>", buttons=btn, parse_mode='html')
 
+    # استعراض تفاصيل الشريحة والتحكم التفاعلي بالكمية والخصم 10%
     elif data.startswith('show_plan_'):
-        pid = int(data.split('_')[2])
+        parts = data.split('_')
+        pid = int(parts[2])
+        qty = int(parts[3]) if len(parts) > 3 else 1
+        if qty < 1: qty = 1
+        if qty > 50: qty = 50
+
         async with aiosqlite.connect(DB_NAME) as db:
-            async with db.execute("SELECT id, name, price_usd, minutes, months, stock, description, category FROM esims WHERE id=?", (pid,)) as cur:
+            async with db.execute("SELECT id, name, price_usd, minutes, months, stock, description, category, is_dealer FROM esims WHERE id=?", (pid,)) as cur:
                 plan = await cur.fetchone()
 
-        if not plan: return
-        esim_id, name, price, mins, months, stock, desc, cat = plan
-        set_session(uid, f'checkout_{uid}', {'esim_id': esim_id, 'price': price, 'name': name, 'qty': 1, 'is_dealer': 0})
+        if not plan:
+            return await event.answer("الباقة غير متوفرة حالياً!", alert=True)
+
+        esim_id, name, base_unit_price, mins, months, stock, desc, cat, is_dlr = plan
+
+        # التحقق من مفتاح الـ API للتجار
+        async with aiosqlite.connect(DB_NAME) as db:
+            async with db.execute("SELECT id FROM dealer_api_keys WHERE user_id=?", (uid,)) as cur:
+                has_api = (await cur.fetchone()) is not None
+
+        unit_price = base_unit_price * (0.5 if (has_api and is_dlr) else 1.0)
+        subtotal = unit_price * qty
+
+        # نظام الخصم التجاري 10% عند شراء أكثر من شريحة واحدة
+        discount_percent = 10 if qty > 1 else 0
+        discount_amount = subtotal * (discount_percent / 100.0)
+        final_price = subtotal - discount_amount
+
+        set_session(uid, f'checkout_{uid}', {
+            'esim_id': esim_id,
+            'unit_price': unit_price,
+            'qty': qty,
+            'final_price': final_price,
+            'name': name,
+            'is_dealer': is_dlr
+        })
+
+        mins_label = f"\n⧺︰ <b>دقائق الاتصال:</b> <code>{mins} دقيقة اتصال</code>" if mins > 0 else "\n⧺︰ <b>نوع الباقة:</b> بيانات إنترنت فائقة السرعة"
+        discount_badge = f"\n⧺︰ <b>خصم الكميات (10%):</b> <code>-${discount_amount:.2f}</code> (وفرت {discount_percent}%)" if discount_percent > 0 else ""
 
         info = f"""<blockquote>⧺︰ <b>تفاصيل الباقة: {name}</b>
-⧺︰ <b>المدة الزمنية:</b> <code>{months} شهر</code>
-⧺︰ <b>السعر:</b> <code>${price:.2f}</code>
+⧺︰ <b>المدة الزمنية:</b> <code>{months} شهر</code>{mins_label}
+⧺︰ <b>سعر الشريحة الواحدة:</b> <code>${unit_price:.2f}</code>
 ⧺︰ <b>المواصفات:</b> {desc}
-⧺︰ <b>المخزون المتوفر:</b> <code>{stock} قطعة</code>
-⧺︰ <b>كود التفعيل:</b> تفعيل فوري موحد (LPA) أو باركود</blockquote>"""
+⧺︰ <b>المخزون المتوفر:</b> <code>{stock} شريحة</code></blockquote>
 
+<blockquote>⧺︰ <b>الكمية المحددة:</b> <code>{qty} شرائح</code>{discount_badge}
+⧺︰ <b>الإجمالي النهائي المطلوب:</b> <code>${final_price:.2f}</code>
+⧺︰ <b>هدية المتجر:</b> خصم تلقائي 10% مطبق عند شراء قطعتين أو أكثر!</blockquote>"""
+
+        # أزرار العداد السريع والتحكم بالكميات
         btn = [
-            [Button.inline(f"⚡ شراء مباشر من المحفظة (${price:.2f})", f'pay_wallet_{pid}'.encode())],
+            [
+                Button.inline("➖ تقليل", f'show_plan_{pid}_{qty-1}'.encode()),
+                Button.inline(f"الكمية: [{qty}]", b'noop'),
+                Button.inline("➕ زيادة", f'show_plan_{pid}_{qty+1}'.encode())
+            ],
+            [
+                Button.inline("1 قطع", f'show_plan_{pid}_1'.encode()),
+                Button.inline("2 قطع (خصم 10%)", f'show_plan_{pid}_2'.encode()),
+                Button.inline("5 قطع (خصم 10%)", f'show_plan_{pid}_5'.encode())
+            ],
+            [Button.inline(f"⚡ شراء الآن من المحفظة (${final_price:.2f})", f'pay_wallet_{pid}'.encode())],
             [Button.inline("💳 الدفع عبر العملات الرقمية", f'pay_crypto_{pid}'.encode())],
-            [Button.inline(t['add_to_cart'], f'add_to_cart_{pid}'.encode())],
-            [Button.inline(t['back'], f'cat_{cat}'.encode())]
+            [Button.inline(t['add_to_cart'], f'add_to_cart_{pid}_{qty}'.encode())]
         ]
+
+        back_target = b'personal_section' if not is_dlr else b'dealer_section'
+        btn.append([Button.inline(t['back'], back_target)])
+
         await event.edit(info, buttons=btn, parse_mode='html')
 
-    # ------------------ الشراء الفوري والمحفظة ------------------
+    elif data == 'noop':
+        await event.answer("استخدم أزرار + و - لتعديل الكمية والحصول على الخصم", alert=False)
+
+    # تنفيذ الدفع المباشر من المحفظة
     elif data.startswith('pay_wallet_'):
         pid = int(data.split('_')[2])
         sess = get_session(uid, f'checkout_{uid}')
         if not sess or sess['esim_id'] != pid:
             return await event.answer("انتهت الجلسة، أعد المحاولة", alert=True)
 
-        price = sess['price']
+        final_price = sess['final_price']
         qty = sess['qty']
         name = sess['name']
 
@@ -586,12 +616,12 @@ async def on_callback(event):
 
         async with wallet_locks[uid]:
             bal = await get_wallet_balance(uid)
-            if bal < price:
+            if bal < final_price:
                 btn = [
                     [Button.inline(t['charge_wallet_btn'], b'charge_wallet')],
                     [Button.inline(t['back'], b'main')]
                 ]
-                return await event.edit(f"{t['insufficient_balance']}\n<blockquote>رصيدك الحالي: <code>${bal:.2f}</code> | المطلوب: <code>${price:.2f}</code></blockquote>", buttons=btn, parse_mode='html')
+                return await event.edit(f"{t['insufficient_balance']}\n<blockquote>رصيدك الحالي: <code>${bal:.2f}</code> | المطلوب: <code>${final_price:.2f}</code></blockquote>", buttons=btn, parse_mode='html')
 
             order_id = f"AURA{secrets.token_hex(4).upper()}"
             now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -600,25 +630,38 @@ async def on_callback(event):
                 await db.execute('''INSERT INTO orders 
                     (order_id, user_id, esim_id, quantity, price_usd, total_usd, lpa_code, status, is_dealer, created_date)
                     VALUES (?, ?, ?, ?, ?, ?, ?, 'paid', ?, ?)''',
-                    (order_id, uid, pid, qty, price/qty, price, DEFAULT_LPA, sess['is_dealer'], now_str))
+                    (order_id, uid, pid, qty, final_price/qty, final_price, DEFAULT_LPA, sess['is_dealer'], now_str))
                 await db.execute("UPDATE esims SET stock = stock - ? WHERE id=?", (qty, pid))
                 await db.commit()
 
-            await update_wallet(uid, -price, 'purchase', f"شراء {qty}x {name}")
+            await update_wallet(uid, -final_price, 'purchase', f"شراء {qty}x {name}")
 
         clear_session(uid, f'checkout_{uid}')
 
-        success_msg = f"""<blockquote>🎉 <b>تم الشراء بنجاح تام!</b>
+        if qty > 1:
+            lpa_list = f"أكواد الشرائح المطلوبة (طلب #{order_id}) - عدد {qty} شرائح:\n" + "\n".join([f"شريحة {i+1}: {DEFAULT_LPA}" for i in range(qty)])
+            bio = io.BytesIO(lpa_list.encode('utf-8'))
+            bio.name = f"Aura_eSIMs_{order_id}.txt"
+            bio.seek(0)
+            success_multi = f"""<blockquote>🎉 <b>تم الشراء بنجاح مع تطبيق خصم 10%!</b>
 • <b>معرف الطلب:</b> <code>{order_id}</code>
 • <b>الباقة:</b> {name}
-• <b>المبلغ المخصوم:</b> <code>${price:.2f}</code>
+• <b>العدد:</b> {qty} شرائح
+• <b>المبلغ المخصوم:</b> <code>${final_price:.2f}</code>
+تم إرسال ملف أكواد التفعيل الموحدة أدناه:</blockquote>"""
+            await event.reply(success_multi, file=bio, parse_mode='html')
+        else:
+            success_single = f"""<blockquote>🎉 <b>تم الشراء بنجاح تام!</b>
+• <b>معرف الطلب:</b> <code>{order_id}</code>
+• <b>الباقة:</b> {name}
+• <b>المبلغ المخصوم:</b> <code>${final_price:.2f}</code>
 
-• <b>كود التفعيل الفوري (LPA):</b>
+• <b>كود التفعيل الفوري الموحد (LPA):</b>
 <code>{DEFAULT_LPA}</code>
 
-• <b>أو امسح الباركود المرفق لتفعيل الشريحة مباشرة.</b></blockquote>"""
+• <b>امسح الباركود المرفق للتفعيل مباشرة من إعدادات الهاتف.</b></blockquote>"""
+            await event.reply(success_single, file=DEFAULT_BARCODE, parse_mode='html')
 
-        await event.reply(success_msg, file=DEFAULT_BARCODE, parse_mode='html')
         text, btn = await build_main_menu(uid)
         await event.respond("الرئيسية:", buttons=btn)
 
@@ -627,40 +670,42 @@ async def on_callback(event):
         sess = get_session(uid, f'checkout_{uid}')
         if not sess: return await event.answer("انتهت الجلسة", alert=True)
 
-        price = sess['price']
+        price = sess['final_price']
         set_session(uid, f'charging_amount_{uid}', price)
         details = await get_payment_details_text(price)
         btn = [
             [Button.inline(t['btn_verify_now'], b'verify_payment_menu')],
-            [Button.inline(t['back'], f'show_plan_{pid}'.encode())]
+            [Button.inline(t['back'], f'show_plan_{pid}_{sess["qty"]}'.encode())]
         ]
         await event.edit(details, buttons=btn, parse_mode='html')
 
-    # ------------------ سلة المشتريات ------------------
+    # سلة المشتريات
     elif data.startswith('add_to_cart_'):
-        pid = int(data.split('_')[3])
+        parts = data.split('_')
+        pid = int(parts[3])
+        qty = int(parts[4]) if len(parts) > 4 else 1
+        sess = get_session(uid, f'checkout_{uid}')
+        price = sess['final_price'] if sess else 20.0
+
         async with aiosqlite.connect(DB_NAME) as db:
-            async with db.execute("SELECT price_usd FROM esims WHERE id=?", (pid,)) as cur:
-                row = await cur.fetchone()
-            if row:
-                await db.execute("INSERT INTO cart (user_id, esim_id, scope, price) VALUES (?, ?, 'Global', ?)", (uid, pid, row[0]))
-                await db.commit()
+            await db.execute("INSERT INTO cart (user_id, esim_id, scope, price) VALUES (?, ?, ?, ?)", (uid, pid, f"Qty: {qty}", price))
+            await db.commit()
         await event.answer("تمت الإضافة إلى سلة المشتريات بنجاح!", alert=True)
 
     elif data == 'view_cart':
         async with aiosqlite.connect(DB_NAME) as db:
-            async with db.execute('''SELECT c.id, e.name, c.price FROM cart c 
+            async with db.execute('''SELECT c.id, e.name, c.scope, c.price FROM cart c 
                                      JOIN esims e ON c.esim_id=e.id WHERE c.user_id=?''', (uid,)) as cur:
                 items = await cur.fetchall()
 
         if not items:
             return await event.edit("<blockquote>🛒 <b>سلة المشتريات فارغة تماماً.</b></blockquote>", buttons=[[Button.inline(t['back'], b'main')]], parse_mode='html')
 
-        total = sum(i[2] for i in items)
+        total = sum(i[3] for i in items)
         cart_txt = "<blockquote>🛒 <b>محتويات سلة المشتريات الخاصة بك:</b></blockquote>\n\n"
         btn = []
-        for cid, name, pr in items:
-            cart_txt += f"• <b>{name}</b> - <code>${pr:.2f}</code>\n"
+        for cid, name, sc, pr in items:
+            cart_txt += f"• <b>{name}</b> ({sc}) - <code>${pr:.2f}</code>\n"
             btn.append([Button.inline(f"❌ حذف: {name}", f"cart_del_{cid}".encode())])
 
         cart_txt += f"\n> ⧺︰ <b>الإجمالي المطلوب:</b> <code>${total:.2f}</code>"
@@ -710,7 +755,7 @@ async def on_callback(event):
         text, btn = await build_main_menu(uid)
         await event.respond("الرئيسية:", buttons=btn)
 
-    # ------------------ قسم التجار والموزعين ------------------
+    # قسم التجار والموزعين
     elif data == 'dealer_section':
         btn = [
             [Button.inline(t['btn_dealer_vf'], b'dealer_list_vf')],
@@ -735,7 +780,7 @@ async def on_callback(event):
         btn = []
         for pid, name, price, m in plans:
             final_p = price * discount
-            btn.append([Button.inline(f"{name} (${final_p:.0f})", f'show_plan_{pid}'.encode())])
+            btn.append([Button.inline(f"{name} (${final_p:.0f})", f'show_plan_{pid}_1'.encode())])
         btn.append([Button.inline(t['back'], b'dealer_section')])
         await event.edit("<blockquote>💼 <b>باقات الجملة 10 شرائح (خصم 50% لمشتركي الـ API):</b></blockquote>", buttons=btn, parse_mode='html')
 
@@ -745,7 +790,7 @@ async def on_callback(event):
                 row = await cur.fetchone()
 
         if row:
-            return await event.edit(f"<blockquote>🔌 <b>مفتاح API الخاص بك مفعّل مسبقاً:</b>\n<code>{row[0]}</code>\n\nتستفيد الآن من خصم 50% الدائم على كافة الباقات.</blockquote>", buttons=[[Button.inline(t['back'], b'dealer_section')]], parse_mode='html')
+            return await event.edit(f"<blockquote>🔌 <b>مفتاح API الخاص بك مفعّل مسبقاً:</b>\n<code>{row[0]}</code>\n\nتستفيد الآن من خصم 50% الدائم على كافة باقات الجملة.</blockquote>", buttons=[[Button.inline(t['back'], b'dealer_section')]], parse_mode='html')
 
         btn = [
             [Button.inline("⚡ تفعيل API فوراً بـ $100 من المحفظة", b'confirm_buy_api')],
@@ -772,7 +817,7 @@ async def on_callback(event):
 
         await event.edit(f"<blockquote>🎉 <b>تم تفعيل مفتاح API الخاص بك بنجاح!</b>\n\n<code>{api_key}</code>\n\nتم تطبيق خصم 50% على حسابك.</blockquote>", buttons=[[Button.inline(t['back'], b'dealer_section')]], parse_mode='html')
 
-    # ------------------ المحفظة والمعاملات ------------------
+    # المحفظة وسجل العمليات
     elif data == 'wallet':
         bal = await get_wallet_balance(uid)
         bot_user = (await client.get_me()).username
@@ -832,11 +877,11 @@ async def on_callback(event):
 
     elif data.startswith('reload_'):
         oid = data.replace('reload_', '')
-        reloaded = f"<blockquote>⧺︰ <b>تفاصيل الطلب المكتمل:</b>\n• معرف الطلب: <code>{oid}</code>\n\n• كود LPA الافتراضي الموحد:\n<code>{DEFAULT_LPA}</code></blockquote>"
+        reloaded = f"<blockquote>⧺︰ <b>تفاصيل الطلب المكتمل:</b>\n• معرف الطلب: <code>{oid}</code>\n\n• كود LPA الموحد:\n<code>{DEFAULT_LPA}</code></blockquote>"
         await event.reply(reloaded, file=DEFAULT_BARCODE, parse_mode='html')
 
     # ==========================================
-    # 7. لوحة تحكم الأدمن الشاملة (مع إدارة طرق الدفع)
+    # 7. لوحة تحكم الأدمن
     # ==========================================
     elif data == 'admin_panel' and await is_admin(uid):
         async with aiosqlite.connect(DB_NAME) as db:
@@ -861,7 +906,6 @@ async def on_callback(event):
         ]
         await event.edit(adm_txt, buttons=btn, parse_mode='html')
 
-    # إدارة طرق الدفع بالكامل من البوت
     elif data == 'adm_manage_payments' and await is_admin(uid):
         async with aiosqlite.connect(DB_NAME) as db:
             async with db.execute("SELECT id, network_name, address, binance_id FROM payment_networks") as cur:
@@ -879,7 +923,7 @@ async def on_callback(event):
 
     elif data == 'adm_add_payment_net' and await is_admin(uid):
         set_session(uid, 'action', 'adm_new_pay_flow')
-        await event.edit("<blockquote>➕ <b>أرسل بيانات طريقة الدفع الجديدة بسطر واحد بالصيغة:</b>\n\n<code>اسم الشبكة | العنوان أو المحفظة | ID المنصة (اختياري)</code>\n\n<b>مثال 1:</b>\n<code>USDT (Arbitrum) | 0x334c55fe51757ac... | </code>\n<b>مثال 2:</b>\n<code>RedotPay ID | | 18274920</code></blockquote>", buttons=[[Button.inline(t['back'], b'adm_manage_payments')]], parse_mode='html')
+        await event.edit("<blockquote>➕ <b>أرسل بيانات طريقة الدفع الجديدة بسطر واحد:</b>\n\n<code>اسم الشبكة | العنوان أو المحفظة | ID المنصة (اختياري)</code>\n\n<b>مثال:</b>\n<code>USDT (Arbitrum) | 0x334c55fe51757ac... | </code></blockquote>", buttons=[[Button.inline(t['back'], b'adm_manage_payments')]], parse_mode='html')
 
     elif data.startswith('edit_pay_') and await is_admin(uid):
         nid = int(data.split('_')[2])
@@ -917,10 +961,9 @@ async def on_callback(event):
             await event.answer("تم حذف طريقة الدفع بنجاح", alert=True)
         await on_callback(event)
 
-    # تعديل الباقات والمخزون
     elif data == 'adm_manage_plans' and await is_admin(uid):
         async with aiosqlite.connect(DB_NAME) as db:
-            async with db.execute("SELECT id, name, price_usd, stock FROM esims LIMIT 15") as cur:
+            async with db.execute("SELECT id, name, price_usd, stock FROM esims LIMIT 20") as cur:
                 plans = await cur.fetchall()
 
         btn = []
@@ -933,14 +976,14 @@ async def on_callback(event):
         pid = int(data.split('_')[3])
         set_session(uid, 'target_plan_id', pid)
         async with aiosqlite.connect(DB_NAME) as db:
-            async with db.execute("SELECT name, price_usd, stock FROM esims WHERE id=?", (pid,)) as cur:
+            async with db.execute("SELECT name, price_usd, stock, minutes FROM esims WHERE id=?", (pid,)) as cur:
                 row = await cur.fetchone()
 
         btn = [
             [Button.inline("تعديل السعر", b'adm_set_plan_price'), Button.inline("تعديل المخزون", b'adm_set_plan_stock')],
             [Button.inline(t['back'], b'adm_manage_plans')]
         ]
-        await event.edit(f"<blockquote>الباقة: <b>{row[0]}</b>\n• السعر: <code>${row[1]:.2f}</code>\n• المخزون: <code>{row[2]}</code></blockquote>", buttons=btn, parse_mode='html')
+        await event.edit(f"<blockquote>الباقة: <b>{row[0]}</b>\n• السعر: <code>${row[1]:.2f}</code>\n• المخزون: <code>{row[2]}</code>\n• الدقائق: <code>{row[3]}</code></blockquote>", buttons=btn, parse_mode='html')
 
     elif data == 'adm_set_plan_price' and await is_admin(uid):
         set_session(uid, 'action', 'adm_set_plan_price_val')
@@ -950,7 +993,6 @@ async def on_callback(event):
         set_session(uid, 'action', 'adm_set_plan_stock_val')
         await event.edit("<blockquote>أرسل كمية المخزون الجديدة:</blockquote>", buttons=[[Button.inline(t['back'], b'adm_manage_plans')]], parse_mode='html')
 
-    # الرصيد والحظر والإذاعة
     elif data == 'adm_add_bal' and await is_admin(uid):
         set_session(uid, 'action', 'adm_add_bal_flow')
         await event.edit("<blockquote>أرسل آيدي العميل ثم المبلغ (مثال: <code>123456789 50</code>):</blockquote>", buttons=[[Button.inline(t['back'], b'admin_panel')]], parse_mode='html')
@@ -967,7 +1009,6 @@ async def on_callback(event):
         set_session(uid, 'action', 'adm_broadcast_flow')
         await event.edit("<blockquote>📢 <b>أرسل الرسالة المراد إذاعتها لجميع المستخدمين:</b></blockquote>", buttons=[[Button.inline(t['back'], b'admin_panel')]], parse_mode='html')
 
-    # قبول / رفض الشحن
     elif data.startswith('approve_dep_') and await is_admin(uid):
         dep_id = int(data.split('_')[2])
         async with aiosqlite.connect(DB_NAME) as db:
@@ -1003,7 +1044,7 @@ async def on_callback(event):
         await event.edit(f"<blockquote>❌ <b>تم رفض الإيصال #{dep_id}.</b></blockquote>", parse_mode='html')
 
 # ==========================================
-# 8. معالجة النصوص والمدخلات
+# 8. معالجة الرسائل والمدخلات
 # ==========================================
 @client.on(events.NewMessage)
 async def on_message(event):
@@ -1066,7 +1107,6 @@ async def on_message(event):
         await event.reply("<blockquote>✅ <b>تم إرسال تذكرتك بنجاح، سنرد عليك في أقرب وقت.</b></blockquote>", parse_mode='html')
         await client.send_message(DEV_ID, f"<blockquote>💬 <b>تذكرة دعم من المستخدم:</b> <code>{uid}</code>\n\n{text}</blockquote>", parse_mode='html')
 
-    # مدخلات إدارة طرق الدفع من الأدمن
     elif action == 'adm_new_pay_flow' and await is_admin(uid):
         clear_session(uid, 'action')
         try:
@@ -1182,12 +1222,12 @@ async def on_message(event):
         await status.edit(f"<blockquote>📢 <b>اكتملت الإذاعة:</b>\n• نجاح: <code>{succ}</code>\n• فشل: <code>{fail}</code></blockquote>", parse_mode='html')
 
 # ==========================================
-# 9. التشغيل
+# 9. نقطة التشغيل الرئيسية
 # ==========================================
 async def main():
     await init_db()
     await client.start(bot_token=BOT_TOKEN)
-    logger.info("Aura eSIM Elite Bot fully upgraded with dynamic admin payment controls & unified LPA.")
+    logger.info("Aura eSIM Elite Bot fully upgraded with dynamic quantity discount and updated minutes.")
     await client.run_until_disconnected()
 
 if __name__ == '__main__':
