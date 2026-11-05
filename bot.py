@@ -1,3 +1,4 @@
+
 import os
 import io
 import time
@@ -32,6 +33,7 @@ DEFAULT_LPA = "LPA:1$hfy.prod.ondemandconnectivity.com$FA1BEB0FB081104C79BAD7E29
 DEFAULT_BARCODE = f"https://api.qrserver.com/v1/create-qr-code/?data={DEFAULT_LPA}&size=500x500"
 
 CHANNEL_ID = -1003968712197
+
 DB_NAME = "esim_market.db"
 
 # الشريحة الموحدة لجميع الطلبات
@@ -291,9 +293,9 @@ async def init_db():
             await db.execute('''INSERT OR IGNORE INTO payment_networks 
                 (network_key, network_name, address, binance_id) VALUES (?, ?, ?, ?)''', (k, n, a, b_id))
 
-        # الباقات الكاملة مع تحديث دقائق فودافون الدقيق
+        # الباقات مع تحديث الدقائق
         full_plans = [
-            # Vodafone (المعدلة بالدقائق المطلوبة)
+            # Vodafone (شهر: 850 | 3 أشهر: 1600 | 6 أشهر: 2300 | 12 شهر: 3700)
             ('vodafone', 'Vodafone Unlimited 1 Month', 'vf_1m', 20.0, 850, 1, 5000, 1, 0, 'بيانات لا محدودة + 850 دقيقة اتصال'),
             ('vodafone', 'Vodafone Unlimited 3 Months', 'vf_3m', 35.0, 1600, 3, 5000, 1, 0, 'بيانات لا محدودة + 1600 دقيقة اتصال'),
             ('vodafone', 'Vodafone Unlimited 6 Months', 'vf_6m', 60.0, 2300, 6, 5000, 1, 0, 'بيانات لا محدودة + 2300 دقيقة اتصال'),
@@ -436,7 +438,7 @@ async def build_main_menu(uid):
     return t['welcome'], btn
 
 # ==========================================
-# 6. معالجات الأحداث
+# 6. معالجات الأحداث والأزرار
 # ==========================================
 @client.on(events.NewMessage(pattern='/start'))
 async def on_start(event):
@@ -469,21 +471,18 @@ async def on_callback(event):
     uid = event.sender_id
     if await is_banned(uid): return
 
-    now = time.time()
-    if uid in user_rate_limits and now - user_rate_limits[uid] < 0.4:
-        return
-    user_rate_limits[uid] = now
-
     data = event.data.decode()
     lang = await get_user_lang(uid)
     t = LANGS.get(lang, LANGS['ar'])
 
-    # الملاحة العامة
+    # ------------------ الملاحة واللغات ------------------
     if data == 'main':
+        await event.answer()
         text, btn = await build_main_menu(uid)
         await event.edit(text, buttons=btn, parse_mode='html')
 
     elif data == 'change_language':
+        await event.answer()
         btn = [
             [Button.inline("🇸🇦 العربية", b'set_lang_ar'), Button.inline("🇬🇧 English", b'set_lang_en')],
             [Button.inline(t['back'], b'main')]
@@ -491,13 +490,15 @@ async def on_callback(event):
         await event.edit("<blockquote>⧺︰ <b>اختر لغتك / Select language:</b></blockquote>", buttons=btn, parse_mode='html')
 
     elif data.startswith('set_lang_'):
+        await event.answer()
         new_lang = data.split('_')[2]
         await set_user_lang(uid, new_lang)
         text, btn = await build_main_menu(uid)
         await event.edit(text, buttons=btn, parse_mode='html')
 
-    # قسم الأفراد
+    # ------------------ قسم الأفراد ------------------
     elif data == 'personal_section':
+        await event.answer()
         btn = [
             [Button.inline(t['btn_vodafone'], b'cat_vodafone')],
             [Button.inline(t['btn_holafly'], b'cat_holafly')],
@@ -507,6 +508,7 @@ async def on_callback(event):
         await event.edit(f"<blockquote>⧺︰ <b>{t['btn_personal']}</b></blockquote>", buttons=btn, parse_mode='html')
 
     elif data in ['cat_vodafone', 'cat_holafly', 'cat_maya']:
+        await event.answer()
         cat = data.replace('cat_', '')
         async with aiosqlite.connect(DB_NAME) as db:
             async with db.execute("SELECT id, name, price_usd, months, minutes FROM esims WHERE category=? AND is_dealer=0 ORDER BY months ASC", (cat,)) as cur:
@@ -523,11 +525,16 @@ async def on_callback(event):
         title_map = {'vodafone': t['btn_vodafone'], 'holafly': t['btn_holafly'], 'maya': t['btn_maya']}
         await event.edit(f"<blockquote>⧺︰ <b>{title_map[cat]}</b></blockquote>\n\n{policy}\n\n> ⧺︰ <b>اختر المدة المناسبة لك:</b>", buttons=btn, parse_mode='html')
 
-    # استعراض تفاصيل الشريحة والتحكم التفاعلي بالكمية والخصم 10%
+    # ------------------ استعراض الباقة والشراء المتعدد والخصم 10% ------------------
     elif data.startswith('show_plan_'):
+        await event.answer()
         parts = data.split('_')
-        pid = int(parts[2])
-        qty = int(parts[3]) if len(parts) > 3 else 1
+        try:
+            pid = int(parts[2])
+            qty = int(parts[3]) if len(parts) > 3 else 1
+        except (IndexError, ValueError):
+            return await event.answer("بيانات غير صحيحة", alert=True)
+
         if qty < 1: qty = 1
         if qty > 50: qty = 50
 
@@ -536,11 +543,10 @@ async def on_callback(event):
                 plan = await cur.fetchone()
 
         if not plan:
-            return await event.answer("الباقة غير متوفرة حالياً!", alert=True)
+            return await event.answer("عذراً، الباقة غير متوفرة!", alert=True)
 
         esim_id, name, base_unit_price, mins, months, stock, desc, cat, is_dlr = plan
 
-        # التحقق من مفتاح الـ API للتجار
         async with aiosqlite.connect(DB_NAME) as db:
             async with db.execute("SELECT id FROM dealer_api_keys WHERE user_id=?", (uid,)) as cur:
                 has_api = (await cur.fetchone()) is not None
@@ -548,7 +554,7 @@ async def on_callback(event):
         unit_price = base_unit_price * (0.5 if (has_api and is_dlr) else 1.0)
         subtotal = unit_price * qty
 
-        # نظام الخصم التجاري 10% عند شراء أكثر من شريحة واحدة
+        # نظام الخصم التجاري 10% عند شراء أكثر من شريحة
         discount_percent = 10 if qty > 1 else 0
         discount_amount = subtotal * (discount_percent / 100.0)
         final_price = subtotal - discount_amount
@@ -575,7 +581,6 @@ async def on_callback(event):
 ⧺︰ <b>الإجمالي النهائي المطلوب:</b> <code>${final_price:.2f}</code>
 ⧺︰ <b>هدية المتجر:</b> خصم تلقائي 10% مطبق عند شراء قطعتين أو أكثر!</blockquote>"""
 
-        # أزرار العداد السريع والتحكم بالكميات
         btn = [
             [
                 Button.inline("➖ تقليل", f'show_plan_{pid}_{qty-1}'.encode()),
@@ -583,9 +588,9 @@ async def on_callback(event):
                 Button.inline("➕ زيادة", f'show_plan_{pid}_{qty+1}'.encode())
             ],
             [
-                Button.inline("1 قطع", f'show_plan_{pid}_1'.encode()),
-                Button.inline("2 قطع (خصم 10%)", f'show_plan_{pid}_2'.encode()),
-                Button.inline("5 قطع (خصم 10%)", f'show_plan_{pid}_5'.encode())
+                Button.inline("1 شريحة", f'show_plan_{pid}_1'.encode()),
+                Button.inline("2 (خصم 10%)", f'show_plan_{pid}_2'.encode()),
+                Button.inline("5 (خصم 10%)", f'show_plan_{pid}_5'.encode())
             ],
             [Button.inline(f"⚡ شراء الآن من المحفظة (${final_price:.2f})", f'pay_wallet_{pid}'.encode())],
             [Button.inline("💳 الدفع عبر العملات الرقمية", f'pay_crypto_{pid}'.encode())],
@@ -595,13 +600,17 @@ async def on_callback(event):
         back_target = b'personal_section' if not is_dlr else b'dealer_section'
         btn.append([Button.inline(t['back'], back_target)])
 
-        await event.edit(info, buttons=btn, parse_mode='html')
+        try:
+            await event.edit(info, buttons=btn, parse_mode='html')
+        except errors.MessageNotModifiedError:
+            pass
 
     elif data == 'noop':
         await event.answer("استخدم أزرار + و - لتعديل الكمية والحصول على الخصم", alert=False)
 
-    # تنفيذ الدفع المباشر من المحفظة
+    # ------------------ تنفيذ الدفع من المحفظة ------------------
     elif data.startswith('pay_wallet_'):
+        await event.answer()
         pid = int(data.split('_')[2])
         sess = get_session(uid, f'checkout_{uid}')
         if not sess or sess['esim_id'] != pid:
@@ -666,6 +675,7 @@ async def on_callback(event):
         await event.respond("الرئيسية:", buttons=btn)
 
     elif data.startswith('pay_crypto_'):
+        await event.answer()
         pid = int(data.split('_')[2])
         sess = get_session(uid, f'checkout_{uid}')
         if not sess: return await event.answer("انتهت الجلسة", alert=True)
@@ -679,8 +689,9 @@ async def on_callback(event):
         ]
         await event.edit(details, buttons=btn, parse_mode='html')
 
-    # سلة المشتريات
+    # ------------------ سلة المشتريات ------------------
     elif data.startswith('add_to_cart_'):
+        await event.answer()
         parts = data.split('_')
         pid = int(parts[3])
         qty = int(parts[4]) if len(parts) > 4 else 1
@@ -693,6 +704,7 @@ async def on_callback(event):
         await event.answer("تمت الإضافة إلى سلة المشتريات بنجاح!", alert=True)
 
     elif data == 'view_cart':
+        await event.answer()
         async with aiosqlite.connect(DB_NAME) as db:
             async with db.execute('''SELECT c.id, e.name, c.scope, c.price FROM cart c 
                                      JOIN esims e ON c.esim_id=e.id WHERE c.user_id=?''', (uid,)) as cur:
@@ -714,6 +726,7 @@ async def on_callback(event):
         await event.edit(cart_txt, buttons=btn, parse_mode='html')
 
     elif data.startswith('cart_del_'):
+        await event.answer()
         cid = int(data.split('_')[2])
         async with aiosqlite.connect(DB_NAME) as db:
             await db.execute("DELETE FROM cart WHERE id=? AND user_id=?", (cid, uid))
@@ -721,6 +734,7 @@ async def on_callback(event):
         await on_callback(event)
 
     elif data == 'cart_pay_all':
+        await event.answer()
         async with aiosqlite.connect(DB_NAME) as db:
             async with db.execute("SELECT c.esim_id, c.price, e.name FROM cart c JOIN esims e ON c.esim_id=e.id WHERE c.user_id=?", (uid,)) as cur:
                 items = await cur.fetchall()
@@ -755,8 +769,9 @@ async def on_callback(event):
         text, btn = await build_main_menu(uid)
         await event.respond("الرئيسية:", buttons=btn)
 
-    # قسم التجار والموزعين
+    # ------------------ قسم التجار والموزعين ------------------
     elif data == 'dealer_section':
+        await event.answer()
         btn = [
             [Button.inline(t['btn_dealer_vf'], b'dealer_list_vf')],
             [Button.inline(t['btn_dealer_hf'], b'dealer_list_hf')],
@@ -767,6 +782,7 @@ async def on_callback(event):
         await event.edit(f"<blockquote>⧺︰ <b>{t['dealer_title']}</b></blockquote>", buttons=btn, parse_mode='html')
 
     elif data.startswith('dealer_list_'):
+        await event.answer()
         cat_key = "dealer_" + data.split('_')[2]
         async with aiosqlite.connect(DB_NAME) as db:
             async with db.execute("SELECT id, name, price_usd, months FROM esims WHERE category=? ORDER BY months ASC", (cat_key,)) as cur:
@@ -785,6 +801,7 @@ async def on_callback(event):
         await event.edit("<blockquote>💼 <b>باقات الجملة 10 شرائح (خصم 50% لمشتركي الـ API):</b></blockquote>", buttons=btn, parse_mode='html')
 
     elif data == 'buy_api_sub_menu':
+        await event.answer()
         async with aiosqlite.connect(DB_NAME) as db:
             async with db.execute("SELECT api_key FROM dealer_api_keys WHERE user_id=?", (uid,)) as cur:
                 row = await cur.fetchone()
@@ -799,6 +816,7 @@ async def on_callback(event):
         await event.edit("<blockquote>🔌 <b>اشتراك وتفعيل نظام الـ API للتجار:</b>\n\n• التكلفة: <b>$100</b> لمرة واحدة مدى الحياة.\n• المميزات: خصم 50% دائم على جميع الباقات وسحب الخدمات برمجياً.</blockquote>", buttons=btn, parse_mode='html')
 
     elif data == 'confirm_buy_api':
+        await event.answer()
         if uid not in wallet_locks:
             wallet_locks[uid] = asyncio.Lock()
 
@@ -817,8 +835,9 @@ async def on_callback(event):
 
         await event.edit(f"<blockquote>🎉 <b>تم تفعيل مفتاح API الخاص بك بنجاح!</b>\n\n<code>{api_key}</code>\n\nتم تطبيق خصم 50% على حسابك.</blockquote>", buttons=[[Button.inline(t['back'], b'dealer_section')]], parse_mode='html')
 
-    # المحفظة وسجل العمليات
+    # ------------------ المحفظة والمعاملات ------------------
     elif data == 'wallet':
+        await event.answer()
         bal = await get_wallet_balance(uid)
         bot_user = (await client.get_me()).username
         ref_link = f"https://t.me/{bot_user}?start=ref{uid}"
@@ -832,6 +851,7 @@ async def on_callback(event):
         await event.edit(text, buttons=btn, parse_mode='html')
 
     elif data == 'wallet_transactions':
+        await event.answer()
         async with aiosqlite.connect(DB_NAME) as db:
             async with db.execute("SELECT type, amount, balance_after, description, date FROM wallet_transactions WHERE user_id=? ORDER BY id DESC LIMIT 8", (uid,)) as cur:
                 txs = await cur.fetchall()
@@ -846,18 +866,22 @@ async def on_callback(event):
         await event.edit(txt, buttons=[[Button.inline(t['back'], b'wallet')]], parse_mode='html')
 
     elif data == 'charge_wallet':
+        await event.answer()
         set_session(uid, 'action', 'waiting_deposit_amount')
         await event.edit(t['charge_prompt'], buttons=[[Button.inline(t['back'], b'wallet')]], parse_mode='html')
 
     elif data == 'verify_payment_menu':
+        await event.answer()
         set_session(uid, 'action', 'waiting_receipt')
         await event.edit(t['verify_prompt'], buttons=[[Button.inline(t['back'], b'wallet')]], parse_mode='html')
 
     elif data == 'support_ticket':
+        await event.answer()
         set_session(uid, 'action', 'waiting_support')
         await event.edit(t['support_prompt'], buttons=[[Button.inline(t['back'], b'main')]], parse_mode='html')
 
     elif data == 'my_orders':
+        await event.answer()
         async with aiosqlite.connect(DB_NAME) as db:
             async with db.execute('''SELECT o.order_id, e.name, o.quantity, o.total_usd, o.created_date 
                                      FROM orders o JOIN esims e ON o.esim_id=e.id 
@@ -876,6 +900,7 @@ async def on_callback(event):
         await event.edit(txt, buttons=btn, parse_mode='html')
 
     elif data.startswith('reload_'):
+        await event.answer()
         oid = data.replace('reload_', '')
         reloaded = f"<blockquote>⧺︰ <b>تفاصيل الطلب المكتمل:</b>\n• معرف الطلب: <code>{oid}</code>\n\n• كود LPA الموحد:\n<code>{DEFAULT_LPA}</code></blockquote>"
         await event.reply(reloaded, file=DEFAULT_BARCODE, parse_mode='html')
@@ -884,6 +909,7 @@ async def on_callback(event):
     # 7. لوحة تحكم الأدمن
     # ==========================================
     elif data == 'admin_panel' and await is_admin(uid):
+        await event.answer()
         async with aiosqlite.connect(DB_NAME) as db:
             sales = (await (await db.execute("SELECT COUNT(*) FROM orders WHERE status='paid'")).fetchone())[0]
             revenue = (await (await db.execute("SELECT SUM(total_usd) FROM orders WHERE status='paid'")).fetchone())[0] or 0.0
@@ -907,6 +933,7 @@ async def on_callback(event):
         await event.edit(adm_txt, buttons=btn, parse_mode='html')
 
     elif data == 'adm_manage_payments' and await is_admin(uid):
+        await event.answer()
         async with aiosqlite.connect(DB_NAME) as db:
             async with db.execute("SELECT id, network_name, address, binance_id FROM payment_networks") as cur:
                 nets = await cur.fetchall()
@@ -922,10 +949,12 @@ async def on_callback(event):
         await event.edit(txt, buttons=btn, parse_mode='html')
 
     elif data == 'adm_add_payment_net' and await is_admin(uid):
+        await event.answer()
         set_session(uid, 'action', 'adm_new_pay_flow')
         await event.edit("<blockquote>➕ <b>أرسل بيانات طريقة الدفع الجديدة بسطر واحد:</b>\n\n<code>اسم الشبكة | العنوان أو المحفظة | ID المنصة (اختياري)</code>\n\n<b>مثال:</b>\n<code>USDT (Arbitrum) | 0x334c55fe51757ac... | </code></blockquote>", buttons=[[Button.inline(t['back'], b'adm_manage_payments')]], parse_mode='html')
 
     elif data.startswith('edit_pay_') and await is_admin(uid):
+        await event.answer()
         nid = int(data.split('_')[2])
         async with aiosqlite.connect(DB_NAME) as db:
             async with db.execute("SELECT network_name, address, binance_id FROM payment_networks WHERE id=?", (nid,)) as cur:
@@ -945,14 +974,17 @@ async def on_callback(event):
         await event.edit(info, buttons=btn, parse_mode='html')
 
     elif data == 'adm_change_pay_addr' and await is_admin(uid):
+        await event.answer()
         set_session(uid, 'action', 'adm_set_pay_addr')
         await event.edit("<blockquote>أرسل العنوان الجديد (Address):</blockquote>", buttons=[[Button.inline(t['back'], b'adm_manage_payments')]], parse_mode='html')
 
     elif data == 'adm_change_pay_id' and await is_admin(uid):
+        await event.answer()
         set_session(uid, 'action', 'adm_set_pay_id')
         await event.edit("<blockquote>أرسل الـ ID الجديد (Pay ID):</blockquote>", buttons=[[Button.inline(t['back'], b'adm_manage_payments')]], parse_mode='html')
 
     elif data == 'adm_del_pay_confirm' and await is_admin(uid):
+        await event.answer()
         nid = get_session(uid, 'target_pay_id')
         if nid:
             async with aiosqlite.connect(DB_NAME) as db:
@@ -962,6 +994,7 @@ async def on_callback(event):
         await on_callback(event)
 
     elif data == 'adm_manage_plans' and await is_admin(uid):
+        await event.answer()
         async with aiosqlite.connect(DB_NAME) as db:
             async with db.execute("SELECT id, name, price_usd, stock FROM esims LIMIT 20") as cur:
                 plans = await cur.fetchall()
@@ -973,6 +1006,7 @@ async def on_callback(event):
         await event.edit("<blockquote>📦 <b>اختر باقة لتعديل سعرها أو مخزونها:</b></blockquote>", buttons=btn, parse_mode='html')
 
     elif data.startswith('adm_edit_plan_') and await is_admin(uid):
+        await event.answer()
         pid = int(data.split('_')[3])
         set_session(uid, 'target_plan_id', pid)
         async with aiosqlite.connect(DB_NAME) as db:
@@ -986,30 +1020,37 @@ async def on_callback(event):
         await event.edit(f"<blockquote>الباقة: <b>{row[0]}</b>\n• السعر: <code>${row[1]:.2f}</code>\n• المخزون: <code>{row[2]}</code>\n• الدقائق: <code>{row[3]}</code></blockquote>", buttons=btn, parse_mode='html')
 
     elif data == 'adm_set_plan_price' and await is_admin(uid):
+        await event.answer()
         set_session(uid, 'action', 'adm_set_plan_price_val')
         await event.edit("<blockquote>أرسل السعر الجديد بالدولار:</blockquote>", buttons=[[Button.inline(t['back'], b'adm_manage_plans')]], parse_mode='html')
 
     elif data == 'adm_set_plan_stock' and await is_admin(uid):
+        await event.answer()
         set_session(uid, 'action', 'adm_set_plan_stock_val')
         await event.edit("<blockquote>أرسل كمية المخزون الجديدة:</blockquote>", buttons=[[Button.inline(t['back'], b'adm_manage_plans')]], parse_mode='html')
 
     elif data == 'adm_add_bal' and await is_admin(uid):
+        await event.answer()
         set_session(uid, 'action', 'adm_add_bal_flow')
         await event.edit("<blockquote>أرسل آيدي العميل ثم المبلغ (مثال: <code>123456789 50</code>):</blockquote>", buttons=[[Button.inline(t['back'], b'admin_panel')]], parse_mode='html')
 
     elif data == 'adm_sub_bal' and await is_admin(uid):
+        await event.answer()
         set_session(uid, 'action', 'adm_sub_bal_flow')
         await event.edit("<blockquote>أرسل آيدي العميل ثم المبلغ المراد خصمه (مثال: <code>123456789 20</code>):</blockquote>", buttons=[[Button.inline(t['back'], b'admin_panel')]], parse_mode='html')
 
     elif data == 'adm_ban_user' and await is_admin(uid):
+        await event.answer()
         set_session(uid, 'action', 'adm_ban_user_flow')
         await event.edit("<blockquote>أرسل آيدي المستخدم لتبديل حالة الحظر (حظر / فك حظر):</blockquote>", buttons=[[Button.inline(t['back'], b'admin_panel')]], parse_mode='html')
 
     elif data == 'adm_broadcast' and await is_admin(uid):
+        await event.answer()
         set_session(uid, 'action', 'adm_broadcast_flow')
         await event.edit("<blockquote>📢 <b>أرسل الرسالة المراد إذاعتها لجميع المستخدمين:</b></blockquote>", buttons=[[Button.inline(t['back'], b'admin_panel')]], parse_mode='html')
 
     elif data.startswith('approve_dep_') and await is_admin(uid):
+        await event.answer()
         dep_id = int(data.split('_')[2])
         async with aiosqlite.connect(DB_NAME) as db:
             async with db.execute("SELECT user_id, amount, status FROM deposit_requests WHERE id=?", (dep_id,)) as cur:
@@ -1028,6 +1069,7 @@ async def on_callback(event):
         await event.edit(f"<blockquote>✅ <b>تم قبول إيداع ${amt:.2f} وشحنها للمستخدم <code>{target_uid}</code>.</b></blockquote>", parse_mode='html')
 
     elif data.startswith('reject_dep_') and await is_admin(uid):
+        await event.answer()
         dep_id = int(data.split('_')[2])
         async with aiosqlite.connect(DB_NAME) as db:
             async with db.execute("SELECT user_id, status FROM deposit_requests WHERE id=?", (dep_id,)) as cur:
@@ -1044,7 +1086,7 @@ async def on_callback(event):
         await event.edit(f"<blockquote>❌ <b>تم رفض الإيصال #{dep_id}.</b></blockquote>", parse_mode='html')
 
 # ==========================================
-# 8. معالجة الرسائل والمدخلات
+# 8. معالجة النصوص والمدخلات
 # ==========================================
 @client.on(events.NewMessage)
 async def on_message(event):
@@ -1222,7 +1264,7 @@ async def on_message(event):
         await status.edit(f"<blockquote>📢 <b>اكتملت الإذاعة:</b>\n• نجاح: <code>{succ}</code>\n• فشل: <code>{fail}</code></blockquote>", parse_mode='html')
 
 # ==========================================
-# 9. نقطة التشغيل الرئيسية
+# 9. التشغيل
 # ==========================================
 async def main():
     await init_db()
