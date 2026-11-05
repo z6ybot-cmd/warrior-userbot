@@ -211,6 +211,14 @@ conn.execute("PRAGMA journal_mode=WAL;")
 conn.execute("PRAGMA synchronous=NORMAL;")
 cur = conn.cursor()
 
+# جدول الأقسام مع ميزة الإخفاء والإظهار
+cur.execute('''CREATE TABLE IF NOT EXISTS categories (
+    slug TEXT PRIMARY KEY,
+    name_ar TEXT,
+    name_en TEXT,
+    is_visible INTEGER DEFAULT 1
+)''')
+
 cur.execute('''CREATE TABLE IF NOT EXISTS esims (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     category TEXT,
@@ -302,15 +310,6 @@ cur.execute('''CREATE TABLE IF NOT EXISTS binance_networks (
     binance_id TEXT
 )''')
 
-cur.execute('''CREATE TABLE IF NOT EXISTS reviews (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER,
-    order_id TEXT,
-    rating INTEGER,
-    comment TEXT,
-    date TEXT
-)''')
-
 cur.execute('''CREATE TABLE IF NOT EXISTS user_sessions (
     user_id INTEGER PRIMARY KEY,
     state_key TEXT,
@@ -318,6 +317,19 @@ cur.execute('''CREATE TABLE IF NOT EXISTS user_sessions (
     expires_at TEXT
 )''')
 
+conn.commit()
+
+# إدراج الأقسام الافتراضية
+DEFAULT_CATEGORIES = [
+    ('vodafone', 'باقات Vodafone (اتصال + إنترنت)', 'Vodafone Plans', 1),
+    ('holafly', 'باقات Holafly (إنترنت لا محدود)', 'Holafly Plans', 1),
+    ('maya', 'باقات Maya (سياسة استخدام عادل)', 'Maya Plans', 1),
+    ('dealer_vf', 'باقات Vodafone تجار (10 شرائح)', 'Vodafone Dealer Plans', 1),
+    ('dealer_hf', 'باقات Holafly تجار (10 شرائح)', 'Holafly Dealer Plans', 1),
+    ('dealer_maya', 'باقات Maya تجار (10 شرائح)', 'Maya Dealer Plans', 1),
+]
+for slug, nar, nen, vis in DEFAULT_CATEGORIES:
+    cur.execute("INSERT OR IGNORE INTO categories (slug, name_ar, name_en, is_visible) VALUES (?, ?, ?, ?)", (slug, nar, nen, vis))
 conn.commit()
 
 DEFAULT_NETWORKS = [
@@ -340,33 +352,32 @@ conn.commit()
 cur.execute("INSERT OR IGNORE INTO admins (user_id) VALUES (?)", (DEV_ID,))
 conn.commit()
 
-# تحديث الباقات والدقائق المطلوبة لفودافون (850، 1600، 2300، 3700)
 DEFAULT_PLANS = [
-    ('vodafone', 'Vodafone Unlimited 1 Month', 'vf_1m', 20.0, 850, 1, 5000, 1, 0, 'بيانات لا محدودة + 850 دقيقة اتصال'),
-    ('vodafone', 'Vodafone Unlimited 3 Months', 'vf_3m', 35.0, 1600, 3, 5000, 1, 0, 'بيانات لا محدودة + 1600 دقيقة اتصال'),
-    ('vodafone', 'Vodafone Unlimited 6 Months', 'vf_6m', 60.0, 2300, 6, 5000, 1, 0, 'بيانات لا محدودة + 2300 دقيقة اتصال'),
-    ('vodafone', 'Vodafone Unlimited 12 Months', 'vf_12m', 80.0, 3700, 12, 5000, 1, 0, 'بيانات لا محدودة + 3700 دقيقة اتصال'),
+    ('vodafone', 'Vodafone Unlimited 1 Month', 'vf_1m', 20.0, 850, 1, 765, 1, 0, 'بيانات لا محدودة + 850 دقيقة اتصال'),
+    ('vodafone', 'Vodafone Unlimited 3 Months', 'vf_3m', 35.0, 1600, 3, 765, 1, 0, 'بيانات لا محدودة + 1600 دقيقة اتصال'),
+    ('vodafone', 'Vodafone Unlimited 6 Months', 'vf_6m', 60.0, 2300, 6, 454, 1, 0, 'بيانات لا محدودة + 2300 دقيقة اتصال'),
+    ('vodafone', 'Vodafone Unlimited 12 Months', 'vf_12m', 80.0, 3700, 12, 864, 1, 0, 'بيانات لا محدودة + 3700 دقيقة اتصال'),
     
-    ('holafly', 'Holafly Unlimited 1 Month', 'hf_1m', 15.0, 0, 1, 5000, 1, 0, 'هولافلاي إنترنت لا محدود بالكامل - بدون استخدام عادل'),
-    ('holafly', 'Holafly Unlimited 3 Months', 'hf_3m', 30.0, 0, 3, 5000, 1, 0, 'هولافلاي إنترنت لا محدود بالكامل - بدون استخدام عادل'),
-    ('holafly', 'Holafly Unlimited 6 Months', 'hf_6m', 50.0, 0, 6, 5000, 1, 0, 'هولافلاي إنترنت لا محدود بالكامل - بدون استخدام عادل'),
-    ('holafly', 'Holafly Unlimited 12 Months', 'hf_12m', 70.0, 0, 12, 5000, 1, 0, 'هولافلاي إنترنت لا محدود بالكامل - بدون استخدام عادل'),
+    ('holafly', 'Holafly Unlimited 1 Month', 'hf_1m', 15.0, 0, 1, 778, 1, 0, 'هولافلاي إنترنت لا محدود بالكامل - بدون استخدام عادل'),
+    ('holafly', 'Holafly Unlimited 3 Months', 'hf_3m', 30.0, 0, 3, 876, 1, 0, 'هولافلاي إنترنت لا محدود بالكامل - بدون استخدام عادل'),
+    ('holafly', 'Holafly Unlimited 6 Months', 'hf_6m', 50.0, 0, 6, 446, 1, 0, 'هولافلاي إنترنت لا محدود بالكامل - بدون استخدام عادل'),
+    ('holafly', 'Holafly Unlimited 12 Months', 'hf_12m', 70.0, 0, 12, 654, 1, 0, 'هولافلاي إنترنت لا محدود بالكامل - بدون استخدام عادل'),
 
-    ('maya', 'Maya Unlimited 1 Month', 'maya_1m', 12.0, 0, 1, 5000, 1, 0, 'مايا بيانات لا محدودة - تخضع للاستخدام العادل 5 جيجا يومياً'),
-    ('maya', 'Maya Unlimited 3 Months', 'maya_3m', 25.0, 0, 3, 5000, 1, 0, 'مايا بيانات لا محدودة - تخضع للاستخدام العادل 5 جيجا يومياً'),
+    ('maya', 'Maya Unlimited 1 Month', 'maya_1m', 12.0, 0, 1, 455, 1, 0, 'مايا بيانات لا محدودة - تخضع للاستخدام العادل 5 جيجا يومياً'),
+    ('maya', 'Maya Unlimited 3 Months', 'maya_3m', 25.0, 0, 3, 754, 1, 0, 'مايا بيانات لا محدودة - تخضع للاستخدام العادل 5 جيجا يومياً'),
 
-    ('dealer', 'Holafly 10 شرائح - 1 شهر', 'dealer_hf_1m', 100.0, 0, 1, 5000, 10, 1, 'عرض 10 شرائح هولافلاي لمدة 1 شهر'),
-    ('dealer', 'Holafly 10 شرائح - 3 أشهر', 'dealer_hf_3m', 130.0, 0, 3, 5000, 10, 1, 'عرض 10 شرائح هولافلاي لمدة 3 أشهر'),
-    ('dealer', 'Holafly 10 شرائح - 6 أشهر', 'dealer_hf_6m', 150.0, 0, 6, 5000, 10, 1, 'عرض 10 شرائح هولافلاي لمدة 6 أشهر'),
-    ('dealer', 'Holafly 10 شرائح - 12 شهر', 'dealer_hf_12m', 180.0, 0, 12, 5000, 10, 1, 'عرض 10 شرائح هولافلاي لمدة 12 شهر'),
+    ('dealer_hf', 'Holafly 10 شرائح - 1 شهر', 'dealer_hf_1m', 100.0, 0, 1, 234, 10, 1, 'عرض 10 شرائح هولافلاي لمدة 1 شهر'),
+    ('dealer_hf', 'Holafly 10 شرائح - 3 أشهر', 'dealer_hf_3m', 130.0, 0, 3, 365, 10, 1, 'عرض 10 شرائح هولافلاي لمدة 3 أشهر'),
+    ('dealer_hf', 'Holafly 10 شرائح - 6 أشهر', 'dealer_hf_6m', 150.0, 0, 6, 975, 10, 1, 'عرض 10 شرائح هولافلاي لمدة 6 أشهر'),
+    ('dealer_hf', 'Holafly 10 شرائح - 12 شهر', 'dealer_hf_12m', 180.0, 0, 12, 356, 10, 1, 'عرض 10 شرائح هولافلاي لمدة 12 شهر'),
     
-    ('dealer', 'Vodafone 10 شرائح - 1 شهر', 'dealer_vf_1m', 120.0, 850, 1, 5000, 10, 1, 'عرض 10 شرائح فودافون لمدة 1 شهر (850 دقيقة لكل شريحة)'),
-    ('dealer', 'Vodafone 10 شرائح - 3 أشهر', 'dealer_vf_3m', 150.0, 1600, 3, 5000, 10, 1, 'عرض 10 شرائح فودافون لمدة 3 أشهر (1600 دقيقة لكل شريحة)'),
-    ('dealer', 'Vodafone 10 شرائح - 6 أشهر', 'dealer_vf_6m', 170.0, 2300, 6, 5000, 10, 1, 'عرض 10 شرائح فودافون لمدة 6 أشهر (2300 دقيقة لكل شريحة)'),
-    ('dealer', 'Vodafone 10 شرائح - 12 شهر', 'dealer_vf_12m', 220.0, 3700, 12, 5000, 10, 1, 'عرض 10 شرائح فودافون لمدة 12 شهر (3700 دقيقة لكل شريحة)'),
+    ('dealer_vf', 'Vodafone 10 شرائح - 1 شهر', 'dealer_vf_1m', 120.0, 850, 1, 344, 10, 1, 'عرض 10 شرائح فودافون لمدة 1 شهر (850 دقيقة لكل شريحة)'),
+    ('dealer_vf', 'Vodafone 10 شرائح - 3 أشهر', 'dealer_vf_3m', 150.0, 1600, 3, 324, 10, 1, 'عرض 10 شرائح فودافون لمدة 3 أشهر (1600 دقيقة لكل شريحة)'),
+    ('dealer_vf', 'Vodafone 10 شرائح - 6 أشهر', 'dealer_vf_6m', 170.0, 2300, 6, 645, 10, 1, 'عرض 10 شرائح فودافون لمدة 6 أشهر (2300 دقيقة لكل شريحة)'),
+    ('dealer_vf', 'Vodafone 10 شرائح - 12 شهر', 'dealer_vf_12m', 220.0, 3700, 12, 345, 10, 1, 'عرض 10 شرائح فودافون لمدة 12 شهر (3700 دقيقة لكل شريحة)'),
 
-    ('dealer', 'Maya 10 شرائح - 1 شهر', 'dealer_maya_1m', 90.0, 0, 1, 5000, 10, 1, 'عرض 10 شرائح مايا لمدة 1 شهر'),
-    ('dealer', 'Maya 10 شرائح - 3 أشهر', 'dealer_maya_3m', 120.0, 0, 3, 5000, 10, 1, 'عرض 10 شرائح مايا لمدة 3 أشهر'),
+    ('dealer_maya', 'Maya 10 شرائح - 1 شهر', 'dealer_maya_1m', 90.0, 0, 1, 354, 10, 1, 'عرض 10 شرائح مايا لمدة 1 شهر'),
+    ('dealer_maya', 'Maya 10 شرائح - 3 أشهر', 'dealer_maya_3m', 120.0, 0, 3, 345, 10, 1, 'عرض 10 شرائح مايا لمدة 3 أشهر'),
 ]
 
 for cat, name, code, price, mins, months, stock, min_q, is_dlr, desc in DEFAULT_PLANS:
@@ -451,18 +462,6 @@ def set_user_lang(uid, lang):
     conn.commit()
     lang_cache[uid] = lang
 
-def get_forced_subs():
-    rows = cur.execute("SELECT value FROM settings WHERE key LIKE 'forced_sub_%'").fetchall()
-    return [r[0] for r in rows]
-
-def add_forced_sub(channel):
-    cur.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (f"forced_sub_{channel}", channel))
-    conn.commit()
-
-def remove_forced_sub(channel):
-    cur.execute("DELETE FROM settings WHERE value=?", (channel,))
-    conn.commit()
-
 def get_wallet_balance(uid):
     row = cur.execute("SELECT balance FROM wallets WHERE user_id=?", (uid,)).fetchone()
     return row[0] if row else 0
@@ -518,46 +517,396 @@ def main_menu(uid):
 
 COUNTRIES_DATA = [
     {"name": "Afghanistan", "flag": "🇦🇫", "operators": "AWCC, Etisalat"},
+    {"name": "Albania", "flag": "🇦🇱", "operators": "Vodafone, Telekom"},
     {"name": "Algeria", "flag": "🇩🇿", "operators": "Djezzy, Mobilis"},
+    {"name": "Andorra", "flag": "🇦🇩", "operators": "Andorra Telecom, Orange"},
+    {"name": "Angola", "flag": "🇦🇴", "operators": "Unitel, Movicel"},
+    {"name": "Antigua and Barbuda", "flag": "🇦🇬", "operators": "Flow, Digicel"},
+    {"name": "Argentina", "flag": "🇦🇷", "operators": "Claro, Movistar"},
+    {"name": "Armenia", "flag": "🇦🇲", "operators": "VivaCell, Beeline"},
+    {"name": "Australia", "flag": "🇦🇺", "operators": "Telstra, Optus, Vodafone"},
+    {"name": "Austria", "flag": "🇦🇹", "operators": "A1, T-Mobile, Magenta"},
+    {"name": "Azerbaijan", "flag": "🇦🇿", "operators": "Azercell, Bakcell"},
+    {"name": "Bahamas", "flag": "🇧🇸", "operators": "BTC, Aliv"},
     {"name": "Bahrain", "flag": "🇧🇭", "operators": "Batelco, Zain, STC"},
+    {"name": "Bangladesh", "flag": "🇧🇩", "operators": "Grameenphone, Robi"},
+    {"name": "Barbados", "flag": "🇧🇧", "operators": "Flow, Digicel"},
+    {"name": "Belarus", "flag": "🇧🇾", "operators": "MTS, A1"},
+    {"name": "Belgium", "flag": "🇧🇪", "operators": "Proximus, Orange, Base"},
+    {"name": "Belize", "flag": "🇧🇿", "operators": "BTL, Digi"},
+    {"name": "Benin", "flag": "🇧🇯", "operators": "MTN, Moov"},
+    {"name": "Bhutan", "flag": "🇧🇹", "operators": "B-Mobile, TashiCell"},
+    {"name": "Bolivia", "flag": "🇧🇴", "operators": "Tigo, Entel"},
+    {"name": "Bosnia and Herzegovina", "flag": "🇧🇦", "operators": "BH Telecom, m:tel"},
+    {"name": "Botswana", "flag": "🇧🇼", "operators": "Mascom, Orange"},
+    {"name": "Brazil", "flag": "🇧🇷", "operators": "Vivo, TIM, Claro"},
+    {"name": "Brunei", "flag": "🇧🇳", "operators": "DST, Progresif"},
+    {"name": "Bulgaria", "flag": "🇧🇬", "operators": "A1, Vivacom, Telenor"},
+    {"name": "Burkina Faso", "flag": "🇧🇫", "operators": "Orange, Telmob"},
+    {"name": "Burundi", "flag": "🇧🇮", "operators": "Econet, Lumitel"},
+    {"name": "Cambodia", "flag": "🇰🇭", "operators": "Smart, Cellcard, Metfone"},
+    {"name": "Cameroon", "flag": "🇨🇲", "operators": "MTN, Orange"},
+    {"name": "Canada", "flag": "🇨🇦", "operators": "Rogers, Bell, Telus"},
+    {"name": "Cape Verde", "flag": "🇨🇻", "operators": "CVMovel, Unitel"},
+    {"name": "Central African Republic", "flag": "🇨🇫", "operators": "Orange, Telecel"},
+    {"name": "Chad", "flag": "🇹🇩", "operators": "Airtel, Tigo"},
+    {"name": "Chile", "flag": "🇨🇱", "operators": "Entel, Claro, Movistar"},
+    {"name": "China", "flag": "🇨🇳", "operators": "China Mobile, China Unicom, China Telecom"},
+    {"name": "Colombia", "flag": "🇨🇴", "operators": "Claro, Movistar, Tigo"},
+    {"name": "Comoros", "flag": "🇰🇲", "operators": "Comores Telecom, Telma"},
+    {"name": "Congo", "flag": "🇨🇬", "operators": "MTN, Airtel"},
+    {"name": "Costa Rica", "flag": "🇨🇷", "operators": "Kölbi, Claro, Movistar"},
+    {"name": "Croatia", "flag": "🇭🇷", "operators": "HT, A1, Telemach"},
+    {"name": "Cuba", "flag": "🇨🇺", "operators": "ETECSA"},
+    {"name": "Cyprus", "flag": "🇨🇾", "operators": "Cyta, MTN, Epic"},
+    {"name": "Czech Republic", "flag": "🇨🇿", "operators": "O2, T-Mobile, Vodafone"},
+    {"name": "Denmark", "flag": "🇩🇰", "operators": "TDC, Telia, Telenor"},
+    {"name": "Djibouti", "flag": "🇩🇯", "operators": "Djibouti Telecom"},
+    {"name": "Dominica", "flag": "🇩🇲", "operators": "Flow, Digicel"},
+    {"name": "Dominican Republic", "flag": "🇩🇴", "operators": "Claro, Altice, Viva"},
+    {"name": "Ecuador", "flag": "🇪🇨", "operators": "Claro, Movistar, CNT"},
     {"name": "Egypt", "flag": "🇪🇬", "operators": "Vodafone, Orange, Etisalat, WE"},
+    {"name": "El Salvador", "flag": "🇸🇻", "operators": "Claro, Tigo, Movistar"},
+    {"name": "Equatorial Guinea", "flag": "🇬🇶", "operators": "Geocom, Orange"},
+    {"name": "Eritrea", "flag": "🇪🇷", "operators": "EriTel"},
+    {"name": "Estonia", "flag": "🇪🇪", "operators": "Telia, Elisa, Tele2"},
+    {"name": "Eswatini", "flag": "🇸🇿", "operators": "Eswatini Mobile, MTN"},
+    {"name": "Ethiopia", "flag": "🇪🇹", "operators": "Ethio Telecom, Safaricom"},
+    {"name": "Fiji", "flag": "🇫🇯", "operators": "Vodafone, Digicel"},
+    {"name": "Finland", "flag": "🇫🇮", "operators": "Elisa, Telia, DNA"},
     {"name": "France", "flag": "🇫🇷", "operators": "Orange, SFR, Free, Bouygues"},
+    {"name": "Gabon", "flag": "🇬🇦", "operators": "Gabon Telecom, Airtel"},
+    {"name": "Gambia", "flag": "🇬🇲", "operators": "Qcell, Africell"},
+    {"name": "Georgia", "flag": "🇬🇪", "operators": "Magti, Cellfie, Beeline"},
     {"name": "Germany", "flag": "🇩🇪", "operators": "T-Mobile, Vodafone, O2"},
+    {"name": "Ghana", "flag": "🇬🇭", "operators": "MTN, Vodafone, AirtelTigo"},
+    {"name": "Greece", "flag": "🇬🇷", "operators": "Cosmote, Vodafone, Nova"},
+    {"name": "Grenada", "flag": "🇬🇩", "operators": "Flow, Digicel"},
+    {"name": "Guatemala", "flag": "🇬🇹", "operators": "Claro, Tigo"},
+    {"name": "Guinea", "flag": "🇬🇳", "operators": "Orange, MTN, Cellcom"},
+    {"name": "Guinea-Bissau", "flag": "🇬🇼", "operators": "MTN, Orange"},
+    {"name": "Guyana", "flag": "🇬🇾", "operators": "GTT, Digicel"},
+    {"name": "Haiti", "flag": "🇭🇹", "operators": "Natcom, Digicel"},
+    {"name": "Honduras", "flag": "🇭🇳", "operators": "Tigo, Claro"},
+    {"name": "Hong Kong", "flag": "🇭🇰", "operators": "CSL, 3, SmarTone"},
+    {"name": "Hungary", "flag": "🇭🇺", "operators": "Magyar Telekom, Telenor, Vodafone"},
+    {"name": "Iceland", "flag": "🇮🇸", "operators": "Síminn, Vodafone, Nova"},
+    {"name": "India", "flag": "🇮🇳", "operators": "Jio, Airtel, Vi"},
+    {"name": "Indonesia", "flag": "🇮🇩", "operators": "Telkomsel, Indosat, XL Axiata"},
+    {"name": "Iran", "flag": "🇮🇷", "operators": "MCI, Irancell, Rightel"},
     {"name": "Iraq", "flag": "🇮🇶", "operators": "Zain, Asiacell, Korek"},
+    {"name": "Ireland", "flag": "🇮🇪", "operators": "Vodafone, Three, Eir"},
+    {"name": "Israel", "flag": "🇮🇱", "operators": "Cellcom, Pelephone, Partner"},
     {"name": "Italy", "flag": "🇮🇹", "operators": "TIM, Vodafone, WindTre, Iliad"},
+    {"name": "Jamaica", "flag": "🇯🇲", "operators": "Digicel, Flow"},
+    {"name": "Japan", "flag": "🇯🇵", "operators": "NTT Docomo, KDDI, SoftBank, Rakuten"},
     {"name": "Jordan", "flag": "🇯🇴", "operators": "Orange, Zain, Umniah"},
+    {"name": "Kazakhstan", "flag": "🇰🇿", "operators": "Kcell, Beeline, Tele2"},
+    {"name": "Kenya", "flag": "🇰🇪", "operators": "Safaricom, Airtel, Telkom"},
+    {"name": "Kiribati", "flag": "🇰🇮", "operators": "Telecom Kiribati"},
     {"name": "Kuwait", "flag": "🇰🇼", "operators": "Zain, Ooredoo, STC"},
+    {"name": "Kyrgyzstan", "flag": "🇰🇬", "operators": "Beeline, MegaCom, O!"},
+    {"name": "Laos", "flag": "🇱🇦", "operators": "Lao Telecom, Unitel, ETL"},
+    {"name": "Latvia", "flag": "🇱🇻", "operators": "LMT, Tele2, Bite"},
     {"name": "Lebanon", "flag": "🇱🇧", "operators": "Alfa, Touch"},
+    {"name": "Lesotho", "flag": "🇱🇸", "operators": "Vodacom, Econet"},
+    {"name": "Liberia", "flag": "🇱🇷", "operators": "Orange, MTN"},
     {"name": "Libya", "flag": "🇱🇾", "operators": "LTT, Almadar, Libyana"},
+    {"name": "Liechtenstein", "flag": "🇱🇮", "operators": "Telecom Liechtenstein, Salt"},
+    {"name": "Lithuania", "flag": "🇱🇹", "operators": "Telia, Tele2, Bite"},
+    {"name": "Luxembourg", "flag": "🇱🇺", "operators": "POST, Orange, Tango"},
+    {"name": "Madagascar", "flag": "🇲🇬", "operators": "Orange, Telma, Airtel"},
+    {"name": "Malawi", "flag": "🇲🇼", "operators": "Airtel, TNM"},
+    {"name": "Malaysia", "flag": "🇲🇾", "operators": "Maxis, Celcom, Digi, U Mobile"},
+    {"name": "Maldives", "flag": "🇲🇻", "operators": "Dhiraagu, Ooredoo"},
+    {"name": "Mali", "flag": "🇲🇱", "operators": "Orange, Malitel"},
+    {"name": "Malta", "flag": "🇲🇹", "operators": "GO, Melita, Epic"},
+    {"name": "Marshall Islands", "flag": "🇲🇭", "operators": "NTA"},
+    {"name": "Mauritania", "flag": "🇲🇷", "operators": "Mauritel, Chinguitel, Mattel"},
+    {"name": "Mauritius", "flag": "🇲🇺", "operators": "My.T, Emtel, Chili"},
+    {"name": "Mexico", "flag": "🇲🇽", "operators": "Telcel, AT&T, Movistar"},
+    {"name": "Micronesia", "flag": "🇫🇲", "operators": "FSM Telecom"},
+    {"name": "Moldova", "flag": "🇲🇩", "operators": "Orange, Moldcell, Unite"},
+    {"name": "Monaco", "flag": "🇲🇨", "operators": "Monaco Telecom"},
+    {"name": "Mongolia", "flag": "🇲🇳", "operators": "Mobicom, Unitel, Skytel"},
+    {"name": "Montenegro", "flag": "🇲🇪", "operators": "Telekom, Telenor, M-tel"},
     {"name": "Morocco", "flag": "🇲🇦", "operators": "Maroc Telecom, Orange, Inwi"},
+    {"name": "Mozambique", "flag": "🇲🇿", "operators": "Vodacom, Movitel"},
+    {"name": "Myanmar", "flag": "🇲🇲", "operators": "MPT, Ooredoo, Telenor/Atom, Mytel"},
+    {"name": "Namibia", "flag": "🇳🇦", "operators": "MTC, Telecom Namibia"},
+    {"name": "Nauru", "flag": "🇳🇷", "operators": "Digicel"},
+    {"name": "Nepal", "flag": "🇳🇵", "operators": "Nepal Telecom, Ncell"},
+    {"name": "Netherlands", "flag": "🇳🇱", "operators": "KPN, Vodafone, T-Mobile"},
+    {"name": "New Zealand", "flag": "🇳🇿", "operators": "Spark, Vodafone, 2degrees"},
+    {"name": "Nicaragua", "flag": "🇳🇮", "operators": "Claro, Tigo"},
+    {"name": "Niger", "flag": "🇳🇪", "operators": "Airtel, Moov"},
+    {"name": "Nigeria", "flag": "🇳🇬", "operators": "MTN, Airtel, Glo, 9mobile"},
+    {"name": "North Korea", "flag": "🇰🇵", "operators": "Koryolink"},
+    {"name": "North Macedonia", "flag": "🇲🇰", "operators": "Telekom, A1"},
+    {"name": "Norway", "flag": "🇳🇴", "operators": "Telenor, Telia, Ice"},
     {"name": "Oman", "flag": "🇴🇲", "operators": "Omantel, Ooredoo, Vodafone"},
+    {"name": "Pakistan", "flag": "🇵🇰", "operators": "Jazz, Zong, Telenor, Ufone"},
+    {"name": "Palau", "flag": "🇵🇼", "operators": "PNCC"},
     {"name": "Palestine", "flag": "🇵🇸", "operators": "Jawwal, Ooredoo"},
+    {"name": "Panama", "flag": "🇵🇦", "operators": "Cable & Wireless, Tigo, Claro"},
+    {"name": "Papua New Guinea", "flag": "🇵🇬", "operators": "Digicel, bmobile"},
+    {"name": "Paraguay", "flag": "🇵🇾", "operators": "Tigo, Claro, Personal"},
+    {"name": "Peru", "flag": "🇵🇪", "operators": "Claro, Movistar, Entel, Bitel"},
+    {"name": "Philippines", "flag": "🇵🇭", "operators": "Globe, Smart, Dito"},
+    {"name": "Poland", "flag": "🇵🇱", "operators": "Orange, Play, T-Mobile, Plus"},
+    {"name": "Portugal", "flag": "🇵🇹", "operators": "MEO, NOS, Vodafone"},
     {"name": "Qatar", "flag": "🇶🇦", "operators": "Ooredoo, Vodafone"},
+    {"name": "Romania", "flag": "🇷🇴", "operators": "Orange, Vodafone, Digi, Telekom"},
+    {"name": "Russia", "flag": "🇷🇺", "operators": "MTS, Beeline, Megafon, Tele2"},
+    {"name": "Rwanda", "flag": "🇷🇼", "operators": "MTN, Airtel"},
+    {"name": "Saint Kitts and Nevis", "flag": "🇰🇳", "operators": "Flow, Digicel"},
+    {"name": "Saint Lucia", "flag": "🇱🇨", "operators": "Flow, Digicel"},
+    {"name": "Samoa", "flag": "🇼🇸", "operators": "Vodafone, Digicel"},
+    {"name": "San Marino", "flag": "🇸🇲", "operators": "TIM, San Marino Telecom"},
+    {"name": "Sao Tome and Principe", "flag": "🇸🇹", "operators": "CSTmóvel"},
     {"name": "Saudi Arabia", "flag": "🇸🇦", "operators": "STC, Mobily, Zain"},
+    {"name": "Senegal", "flag": "🇸🇳", "operators": "Orange, Free, Expresso"},
+    {"name": "Serbia", "flag": "🇷🇸", "operators": "Telekom Srbija, Yettel, A1"},
+    {"name": "Seychelles", "flag": "🇸🇨", "operators": "Airtel, Cable & Wireless"},
+    {"name": "Sierra Leone", "flag": "🇸🇱", "operators": "Orange, Africell"},
+    {"name": "Singapore", "flag": "🇸🇬", "operators": "Singtel, StarHub, M1, SIMBA"},
+    {"name": "Slovakia", "flag": "🇸🇰", "operators": "Orange, Telekom, O2, 4ka"},
+    {"name": "Slovenia", "flag": "🇸🇮", "operators": "Telekom Slovenije, A1, Telemach"},
+    {"name": "Solomon Islands", "flag": "🇸🇧", "operators": "Our Telekom, Bintang"},
+    {"name": "Somalia", "flag": "🇸🇴", "operators": "Hormuud, Somtel"},
+    {"name": "South Africa", "flag": "🇿🇦", "operators": "Vodacom, MTN, Cell C, Telkom"},
+    {"name": "South Korea", "flag": "🇰🇷", "operators": "SK Telecom, KT, LG Uplus"},
+    {"name": "South Sudan", "flag": "🇸🇸", "operators": "MTN, Zain"},
     {"name": "Spain", "flag": "🇪🇸", "operators": "Movistar, Vodafone, Orange, Yoigo"},
+    {"name": "Sri Lanka", "flag": "🇱🇰", "operators": "Dialog, Mobitel, Hutch"},
     {"name": "Sudan", "flag": "🇸🇩", "operators": "Zain, MTN, Sudani"},
+    {"name": "Suriname", "flag": "🇸🇷", "operators": "Telesur, Digicel"},
+    {"name": "Sweden", "flag": "🇸🇪", "operators": "Telia, Telenor, Tele2, Tre"},
+    {"name": "Switzerland", "flag": "🇨🇭", "operators": "Swisscom, Sunrise, Salt"},
     {"name": "Syria", "flag": "🇸🇾", "operators": "Syriatel, MTN"},
+    {"name": "Taiwan", "flag": "🇹🇼", "operators": "Chunghwa Telecom, Taiwan Mobile, FarEasTone"},
+    {"name": "Tajikistan", "flag": "🇹🇯", "operators": "Tcell, Beeline, Megafon"},
+    {"name": "Tanzania", "flag": "🇹🇿", "operators": "Vodacom, Airtel, Tigo, Halotel"},
+    {"name": "Thailand", "flag": "🇹🇭", "operators": "AIS, True Move H, DTAC"},
+    {"name": "Timor-Leste", "flag": "🇹🇱", "operators": "Telemor, Timor Telecom, Telkomcel"},
+    {"name": "Togo", "flag": "🇹🇬", "operators": "Togocel, Moov"},
+    {"name": "Tonga", "flag": "🇹🇴", "operators": "Digicel, Tones"},
+    {"name": "Trinidad and Tobago", "flag": "🇹🇹", "operators": "TSTT, Digicel"},
     {"name": "Tunisia", "flag": "🇹🇳", "operators": "Ooredoo, Orange, Tunisie Telecom"},
     {"name": "Turkey", "flag": "🇹🇷", "operators": "Turkcell, Vodafone, Türk Telekom"},
+    {"name": "Turkmenistan", "flag": "🇹🇲", "operators": "TM Cell"},
+    {"name": "Tuvalu", "flag": "🇹🇻", "operators": "Tuvalu Telecom"},
+    {"name": "Uganda", "flag": "🇺🇬", "operators": "MTN, Airtel"},
+    {"name": "Ukraine", "flag": "🇺🇦", "operators": "Kyivstar, Vodafone, lifecell"},
     {"name": "United Arab Emirates", "flag": "🇦🇪", "operators": "Etisalat (e&), du, Virgin Mobile"},
     {"name": "United Kingdom", "flag": "🇬🇧", "operators": "EE, Vodafone, O2, Three"},
     {"name": "United States", "flag": "🇺🇸", "operators": "Verizon, AT&T, T-Mobile"},
-    {"name": "Yemen", "flag": "🇾🇪", "operators": "You, Sabafon, Yemen Mobile"}
+    {"name": "Uruguay", "flag": "🇺🇾", "operators": "Antel, Movistar, Claro"},
+    {"name": "Uzbekistan", "flag": "🇺🇿", "operators": "Ucell, Beeline, Uzmobile, UMS"},
+    {"name": "Vanuatu", "flag": "🇻🇺", "operators": "Digicel, Vodafone"},
+    {"name": "Vatican City", "flag": "🇻🇦", "operators": "Vatican Telecom"},
+    {"name": "Venezuela", "flag": "🇻🇪", "operators": "Movistar, Digicel, Movilnet"},
+    {"name": "Vietnam", "flag": "🇻🇳", "operators": "Viettel, Vinaphone, Mobifone"},
+    {"name": "Yemen", "flag": "🇾🇪", "operators": "You, Sabafon, Yemen Mobile"},
+    {"name": "Zambia", "flag": "🇿🇲", "operators": "Airtel, MTN, Zamtel"},
+    {"name": "Zimbabwe", "flag": "🇿🇼", "operators": "Econet, NetOne, Telecel"}
 ]
 
 COUNTRY_ALIASES = {
-    'مصر': 'Egypt', 'egypt': 'Egypt',
-    'السعودية': 'Saudi Arabia', 'saudi arabia': 'Saudi Arabia', 'ksa': 'Saudi Arabia',
-    'الإمارات': 'United Arab Emirates', 'uae': 'United Arab Emirates', 'dubai': 'United Arab Emirates',
-    'الكويت': 'Kuwait', 'kuwait': 'Kuwait',
-    'قطر': 'Qatar', 'qatar': 'Qatar',
-    'البحرين': 'Bahrain', 'bahrain': 'Bahrain',
-    'عمان': 'Oman', 'oman': 'Oman',
-    'الأردن': 'Jordan', 'jordan': 'Jordan',
-    'العراق': 'Iraq', 'iraq': 'Iraq',
-    'تركيا': 'Turkey', 'turkey': 'Turkey',
-    'أمريكا': 'United States', 'usa': 'United States',
-    'بريطانيا': 'United Kingdom', 'uk': 'United Kingdom'
+    'أفغانستان': 'Afghanistan', 'afghanistan': 'Afghanistan', 'افغانستان': 'Afghanistan', '阿富汗': 'Afghanistan',
+    'ألبانيا': 'Albania', 'albania': 'Albania', 'آلبانی': 'Albania', '阿尔巴尼亚': 'Albania',
+    'الجزائر': 'Algeria', 'algeria': 'Algeria', 'الجزایر': 'Algeria', '阿尔及利亚': 'Algeria',
+    'أندورا': 'Andorra', 'andorra': 'Andorra', 'آندورا': 'Andorra', '安道尔': 'Andorra',
+    'أنغولا': 'Angola', 'angola': 'Angola', 'آنگولا': 'Angola', '安哥拉': 'Angola',
+    'أنتيغوا وبربودا': 'Antigua and Barbuda', 'antigua and barbuda': 'Antigua and Barbuda', 'آنتیگوا و باربودا': 'Antigua and Barbuda', '安提瓜和巴布达': 'Antigua and Barbuda',
+    'الأرجنتين': 'Argentina', 'argentina': 'Argentina', 'آرژانتین': 'Argentina', '阿根廷': 'Argentina',
+    'أرمينيا': 'Armenia', 'armenia': 'Armenia', 'ارمنستان': 'Armenia', '亚美尼亚': 'Armenia',
+    'أستراليا': 'Australia', 'australia': 'Australia', 'استرالیا': 'Australia', '澳大利亚': 'Australia',
+    'النمسا': 'Austria', 'austria': 'Austria', 'اتریش': 'Austria', '奥地利': 'Austria',
+    'أذربيجان': 'Azerbaijan', 'azerbaijan': 'Azerbaijan', 'آذربایجان': 'Azerbaijan', '阿塞拜疆': 'Azerbaijan',
+    'الباهاما': 'Bahamas', 'bahamas': 'Bahamas', 'باهاما': 'Bahamas', '巴哈马': 'Bahamas',
+    'البحرين': 'Bahrain', 'bahrain': 'Bahrain', 'بحرین': 'Bahrain', '巴林': 'Bahrain',
+    'بنغلاديش': 'Bangladesh', 'bangladesh': 'Bangladesh', 'بنگلادش': 'Bangladesh', '孟加拉国': 'Bangladesh',
+    'بربادوس': 'Barbados', 'barbados': 'Barbados', 'باربادوس': 'Barbados', '巴巴多斯': 'Barbados',
+    'بيلاروسيا': 'Belarus', 'belarus': 'Belarus', 'بلاروس': 'Belarus', '白俄罗斯': 'Belarus',
+    'بلجيكا': 'Belgium', 'belgium': 'Belgium', 'بلژیک': 'Belgium', '比利时': 'Belgium',
+    'بيليز': 'Belize', 'belize': 'Belize', 'بلیز': 'Belize', '伯利兹': 'Belize',
+    'بنين': 'Benin', 'benin': 'Benin', 'بنین': 'Benin', '贝宁': 'Benin',
+    'بوتان': 'Bhutan', 'bhutan': 'Bhutan', 'بوتان': 'Bhutan', '不丹': 'Bhutan',
+    'بوليفيا': 'Bolivia', 'bolivia': 'Bolivia', 'بولیوی': 'Bolivia', '玻利维亚': 'Bolivia',
+    'البوسنة والهرسك': 'Bosnia and Herzegovina', 'bosnia and herzegovina': 'Bosnia and Herzegovina', 'بوسنی و هرزگوین': 'Bosnia and Herzegovina', '波斯尼亚和黑塞哥维那': 'Bosnia and Herzegovina',
+    'بوتسوانا': 'Botswana', 'botswana': 'Botswana', 'بوتسوانا': 'Botswana', '博茨瓦纳': 'Botswana',
+    'البرازيل': 'Brazil', 'brazil': 'Brazil', 'برزیل': 'Brazil', '巴西': 'Brazil',
+    'بروناي': 'Brunei', 'brunei': 'Brunei', 'برونئی': 'Brunei', '文莱': 'Brunei',
+    'بلغاريا': 'Bulgaria', 'bulgaria': 'Bulgaria', 'بلغارستان': 'Bulgaria', '保加利亚': 'Bulgaria',
+    'بوركينا فاسو': 'Burkina Faso', 'burkina faso': 'Burkina Faso', 'بورکینافاسو': 'Burkina Faso', '布基纳法索': 'Burkina Faso',
+    'بوروندي': 'Burundi', 'burundi': 'Burundi', 'بوروندی': 'Burundi', '布隆迪': 'Burundi',
+    'كمبوديا': 'Cambodia', 'cambodia': 'Cambodia', 'کامبوج': 'Cambodia', '柬埔寨': 'Cambodia',
+    'الكاميرون': 'Cameroon', 'cameroon': 'Cameroon', 'کامرون': 'Cameroon', '喀麦隆': 'Cameroon',
+    'كندا': 'Canada', 'canada': 'Canada', 'کانادا': 'Canada', '加拿大': 'Canada',
+    'الرأس الأخضر': 'Cape Verde', 'cape verde': 'Cape Verde', 'کیپ ورد': 'Cape Verde', '佛得角': 'Cape Verde',
+    'جمهورية أفريقيا الوسطى': 'Central African Republic', 'central african republic': 'Central African Republic', 'جمهوری آفریقای مرکزی': 'Central African Republic', '中非共和国': 'Central African Republic',
+    'تشاد': 'Chad', 'chad': 'Chad', 'چاد': 'Chad', '乍得': 'Chad',
+    'تشيلي': 'Chile', 'chile': 'Chile', 'شیلی': 'Chile', '智利': 'Chile',
+    'الصين': 'China', 'china': 'China', 'چین': 'China', '中国': 'China',
+    'كولومبيا': 'Colombia', 'colombia': 'Colombia', 'کلمبیا': 'Colombia', '哥伦比亚': 'Colombia',
+    'جزر القمر': 'Comoros', 'comoros': 'Comoros', 'قمر': 'Comoros', '科摩罗': 'Comoros',
+    'الكونغو': 'Congo', 'congo': 'Congo', 'کنگو': 'Congo', '刚果': 'Congo',
+    'كوستاريكا': 'Costa Rica', 'costa rica': 'Costa Rica', 'کاستاریکا': 'Costa Rica', '哥斯达黎加': 'Costa Rica',
+    'كرواتيا': 'Croatia', 'croatia': 'Croatia', 'کرواسی': 'Croatia', '克罗地亚': 'Croatia',
+    'كوبا': 'Cuba', 'cuba': 'Cuba', 'کوبا': 'Cuba', '古巴': 'Cuba',
+    'قبرص': 'Cyprus', 'cyprus': 'Cyprus', 'قبرس': 'Cyprus', '塞浦路斯': 'Cyprus',
+    'التشيك': 'Czech Republic', 'czech republic': 'Czech Republic', 'جمهوری چک': 'Czech Republic', '捷克': 'Czech Republic',
+    'الدنمارك': 'Denmark', 'denmark': 'Denmark', 'دانمارک': 'Denmark', '丹麦': 'Denmark',
+    'جيبوتي': 'Djibouti', 'djibouti': 'Djibouti', 'جیبوتی': 'Djibouti', '吉布提': 'Djibouti',
+    'دومينيكا': 'Dominica', 'dominica': 'Dominica', 'دومینیکا': 'Dominica', '多米尼克': 'Dominica',
+    'جمهورية الدومينيكان': 'Dominican Republic', 'dominican republic': 'Dominican Republic', 'جمهوری دومینیکن': 'Dominican Republic', '多米尼加共和国': 'Dominican Republic',
+    'الإكوادور': 'Ecuador', 'ecuador': 'Ecuador', 'اکوادور': 'Ecuador', '厄瓜多尔': 'Ecuador',
+    'مصر': 'Egypt', 'egypt': 'Egypt', 'مصر': 'Egypt', '埃及': 'Egypt',
+    'السلفادور': 'El Salvador', 'el salvador': 'El Salvador', 'السالوادور': 'El Salvador', '萨尔瓦多': 'El Salvador',
+    'غينيا الاستوائية': 'Equatorial Guinea', 'equatorial guinea': 'Equatorial Guinea', 'گینه استوایی': 'Equatorial Guinea', '赤道几内亚': 'Equatorial Guinea',
+    'إريتريا': 'Eritrea', 'eritrea': 'Eritrea', 'اریتره': 'Eritrea', '厄立特里亚': 'Eritrea',
+    'إستونيا': 'Estonia', 'estonia': 'Estonia', 'استونی': 'Estonia', '爱沙尼亚': 'Estonia',
+    'إسواتيني': 'Eswatini', 'eswatini': 'Eswatini', 'اسواتینی': 'Eswatini', '斯威士兰': 'Eswatini',
+    'إثيوبيا': 'Ethiopia', 'ethiopia': 'Ethiopia', 'اتیوپی': 'Ethiopia', '埃塞俄比亚': 'Ethiopia',
+    'فيجي': 'Fiji', 'fiji': 'Fiji', 'فیجی': 'Fiji', '斐济': 'Fiji',
+    'فنلندا': 'Finland', 'finland': 'Finland', 'فنلاند': 'Finland', '芬兰': 'Finland',
+    'فرنسا': 'France', 'france': 'France', 'فرانسه': 'France', '法国': 'France',
+    'غابون': 'Gabon', 'gabon': 'Gabon', 'گابن': 'Gabon', '加蓬': 'Gabon',
+    'غامبي': 'Gambia', 'gambia': 'Gambia', 'گامبیا': 'Gambia', '冈比亚': 'Gambia',
+    'جورجيا': 'Georgia', 'georgia': 'Georgia', 'گرجستان': 'Georgia', '格鲁吉亚': 'Georgia',
+    'ألمانيا': 'Germany', 'germany': 'Germany', 'آلمان': 'Germany', '德国': 'Germany',
+    'غانا': 'Ghana', 'ghana': 'Ghana', 'غنا': 'Ghana', '加纳': 'Ghana',
+    'اليونان': 'Greece', 'greece': 'Greece', 'یونان': 'Greece', '希腊': 'Greece',
+    'غرينادا': 'Grenada', 'grenada': 'Grenada', 'گرنادا': 'Grenada', '格林纳达': 'Grenada',
+    'غواتيمالا': 'Guatemala', 'guatemala': 'Guatemala', 'گواتمالا': 'Guatemala', '危地马拉': 'Guatemala',
+    'غينيا': 'Guinea', 'guinea': 'Guinea', 'گینه': 'Guinea', '几内亚': 'Guinea',
+    'غينيا بيساو': 'Guinea-Bissau', 'guinea-bissau': 'Guinea-Bissau', 'گینه بیسائو': 'Guinea-Bissau', '几内亚比绍': 'Guinea-Bissau',
+    'غيانا': 'Guyana', 'guyana': 'Guyana', 'گویان': 'Guyana', '圭亚那': 'Guyana',
+    'هايتي': 'Haiti', 'haiti': 'Haiti', 'هائیتی': 'Haiti', '海地': 'Haiti',
+    'هندوراس': 'Honduras', 'honduras': 'Honduras', 'هندوراس': 'Honduras', '洪都拉斯': 'Honduras',
+    'هونغ كونغ': 'Hong Kong', 'hong kong': 'Hong Kong', 'هنگ کنگ': 'Hong Kong', '香港': 'Hong Kong',
+    'المجر': 'Hungary', 'hungary': 'Hungary', 'مجارستان': 'Hungary', '匈牙利': 'Hungary',
+    'آيسلندا': 'Iceland', 'iceland': 'Iceland', 'ایسلند': 'Iceland', '冰岛': 'Iceland',
+    'الهند': 'India', 'india': 'India', 'هند': 'India', '印度': 'India',
+    'إندونيسيا': 'Indonesia', 'indonesia': 'Indonesia', 'اندونزی': 'Indonesia', '印度尼西亚': 'Indonesia',
+    'إيران': 'Iran', 'iran': 'Iran', 'ایران': 'Iran', '伊朗': 'Iran',
+    'العراق': 'Iraq', 'iraq': 'Iraq', 'عراق': 'Iraq', '伊拉克': 'Iraq',
+    'أيرلندا': 'Ireland', 'ireland': 'Ireland', 'ایرلند': 'Ireland', '爱尔兰': 'Ireland',
+    'إسرائيل': 'Israel', 'israel': 'Israel', 'اسرائیل': 'Israel', '以色列': 'Israel',
+    'إيطاليا': 'Italy', 'italy': 'Italy', 'ایتالیا': 'Italy', '意大利': 'Italy',
+    'جامايكا': 'Jamaica', 'jamaica': 'Jamaica', 'جامائیکا': 'Jamaica', '牙买加': 'Jamaica',
+    'اليابان': 'Japan', 'japan': 'Japan', 'ژاپن': 'Japan', '日本': 'Japan',
+    'الأردن': 'Jordan', 'jordan': 'Jordan', 'اردن': 'Jordan', '约旦': 'Jordan',
+    'كازاخستان': 'Kazakhstan', 'kazakhstan': 'Kazakhstan', 'قزاقستان': 'Kazakhstan', '哈萨克斯坦': 'Kazakhstan',
+    'كينيا': 'Kenya', 'kenya': 'Kenya', 'کنیا': 'Kenya', '肯尼亚': 'Kenya',
+    'كيريباتي': 'Kiribati', 'kiribati': 'Kiribati', 'کیریباتی': 'Kiribati', '基里巴斯': 'Kiribati',
+    'الكويت': 'Kuwait', 'kuwait': 'Kuwait', 'کویت': 'Kuwait', '科威特': 'Kuwait',
+    'قيرغيزستان': 'Kyrgyzstan', 'kyrgyzstan': 'Kyrgyzstan', 'قرقیزستان': 'Kyrgyzstan', '吉尔吉斯斯坦': 'Kyrgyzstan',
+    'لاوس': 'Laos', 'laos': 'Laos', 'لائوس': 'Laos', '老挝': 'Laos',
+    'لاتفيا': 'Latvia', 'latvia': 'Latvia', 'لتونی': 'Latvia', '拉脱维亚': 'Latvia',
+    'لبنان': 'Lebanon', 'lebanon': 'Lebanon', 'لبنان': 'Lebanon', '黎巴嫩': 'Lebanon',
+    'ليسوتو': 'Lesotho', 'lesotho': 'Lesotho', 'لسوتو': 'Lesotho', '莱索托': 'Lesotho',
+    'ليبيريا': 'Liberia', 'liberia': 'Liberia', 'لیبریا': 'Liberia', '利比里亚': 'Liberia',
+    'ليبيا': 'Libya', 'libya': 'Libya', 'لیبی': 'Libya', '利比亚': 'Libya',
+    'ليختنشتاين': 'Liechtenstein', 'liechtenstein': 'Liechtenstein', 'لیختن‌اشتاین': 'Liechtenstein', '列支敦士登': 'Liechtenstein',
+    'ليتوانيا': 'Lithuania', 'lithuania': 'Lithuania', 'لیتوانی': 'Lithuania', '立陶宛': 'Lithuania',
+    'لوكسمبورغ': 'Luxembourg', 'luxembourg': 'Luxembourg', 'لوکزامبورگ': 'Luxembourg', '卢森堡': 'Luxembourg',
+    'مدغشقر': 'Madagascar', 'madagascar': 'Madagascar', 'ماداگاسکار': 'Madagascar', '马达加斯加': 'Madagascar',
+    'مالاوى': 'Malawi', 'malawi': 'Malawi', 'مالاوی': 'Malawi', '马拉维': 'Malawi',
+    'ماليزيا': 'Malaysia', 'malaysia': 'Malaysia', 'مالزی': 'Malaysia', '马来西亚': 'Malaysia',
+    'جزر المالديف': 'Maldives', 'maldives': 'Maldives', 'مالدیو': 'Maldives', '马尔代夫': 'Maldives',
+    'مالي': 'Mali', 'mali': 'Mali', 'مالی': 'Mali', '马里': 'Malized',
+    'مالطا': 'Malta', 'malta': 'Malta', 'مالت': 'Malta', '马耳他': 'Malta',
+    'جزر مارشال': 'Marshall Islands', 'marshall islands': 'Marshall Islands', 'جزایر مارشال': 'Marshall Islands', '马绍尔群岛': 'Marshall Islands',
+    'موريتانيا': 'Mauritania', 'mauritania': 'Mauritania', 'موریتانی': 'Mauritania', '毛里塔尼亚': 'Mauritania',
+    'موريشيوس': 'Mauritius', 'mauritius': 'Mauritius', 'موریس': 'Mauritius', '毛里求斯': 'Mauritius',
+    'المكسيك': 'Mexico', 'mexico': 'Mexico', 'مکزیک': 'Mexico', '墨西哥': 'Mexico',
+    'ميكرونيزيا': 'Micronesia', 'micronesia': 'Micronesia', 'میکرونزی': 'Micronesia', '密克罗尼西亚': 'Micronesia',
+    'مولدوفا': 'Moldova', 'moldova': 'Moldova', 'مولداوی': 'Moldova', '摩尔多瓦': 'Moldova',
+    'موناكو': 'Monaco', 'monaco': 'Monaco', 'موناکو': 'Monaco', '摩纳哥': 'Monaco',
+    'منغوليا': 'Mongolia', 'mongolia': 'Mongolia', 'مغولستان': 'Mongolia', '蒙古': 'Mongolia',
+    'الجبل الأسود': 'Montenegro', 'montenegro': 'Montenegro', 'مونته‌نگرو': 'Montenegro', '黑山': 'Montenegro',
+    'المغرب': 'Morocco', 'morocco': 'Morocco', 'مراکش': 'Morocco', '摩洛哥': 'Morocco',
+    'موزمبيق': 'Mozambique', 'mozambique': 'Mozambique', 'موزامبیک': 'Mozambique', '莫桑比克': 'Mozambique',
+    'ميانمار': 'Myanmar', 'myanmar': 'Myanmar', 'میانمار': 'Myanmar', '缅甸': 'Myanmar',
+    'ناميبيا': 'Namibia', 'namibia': 'Namibia', 'نامیبیا': 'Namibia', '纳米比亚': 'Namibia',
+    'ناورو': 'Nauru', 'nauru': 'Nauru', 'نائورو': 'Nauru', '瑙鲁': 'Nauru',
+    'نيبال': 'Nepal', 'nepal': 'Nepal', 'نپال': 'Nepal', '尼泊尔': 'Nepal',
+    'هولندا': 'Netherlands', 'netherlands': 'Netherlands', 'هلند': 'Netherlands', '荷兰': 'Netherlands',
+    'نيوزيلندا': 'New Zealand', 'new zealand': 'New Zealand', 'نیوزیلند': 'New Zealand', '新西兰': 'New Zealand',
+    'نيكاراغوا': 'Nicaragua', 'nicaragua': 'Nicaragua', 'نیکاراگوئه': 'Nicaragua', '尼加拉瓜': 'Nicaragua',
+    'النيجر': 'Niger', 'niger': 'Niger', 'نیجر': 'Niger', '尼日尔': 'Niger',
+    'نيجيريا': 'Nigeria', 'nigeria': 'Nigeria', 'نیجریه': 'Nigeria', '尼日利亚': 'Nigeria',
+    'كوريا الشمالية': 'North Korea', 'north korea': 'North Korea', 'کره شمالی': 'North Korea', '朝鲜': 'North Korea',
+    'مقدونيا الشمالية': 'North Macedonia', 'north macedonia': 'North Macedonia', 'مقدونیه شمالی': 'North Macedonia', '北马其顿': 'North Macedonia',
+    'النرويج': 'Norway', 'norway': 'Norway', 'نروژ': 'Norway', '挪威': 'Norway',
+    'عمان': 'Oman', 'oman': 'Oman', 'عمان': 'Oman', '阿曼': 'Oman',
+    'باكستان': 'Pakistan', 'pakistan': 'Pakistan', 'پاکستان': 'Pakistan', '巴基斯坦': 'Pakistan',
+    'بالاو': 'Palau', 'palau': 'Palau', 'پالائو': 'Palau', '帕劳': 'Palau',
+    'فلسطين': 'Palestine', 'palestine': 'Palestine', 'فلسطین': 'Palestine', '巴勒斯坦': 'Palestine',
+    'بنما': 'Panama', 'panama': 'Panama', 'پاناما': 'Panama', '巴拿马': 'Panama',
+    'بابوا غينيا الجديدة': 'Papua New Guinea', 'papua new guinea': 'Papua New Guinea', 'پاپوآ گینه نو': 'Papua New Guinea', '巴布亚新几内亚': 'Papua New Guinea',
+    'باراغواي': 'Paraguay', 'paraguay': 'Paraguay', 'پاراگوئه': 'Paraguay', '巴拉圭': 'Paraguay',
+    'بيرو': 'Peru', 'peru': 'Peru', 'پرو': 'Peru', '秘鲁': 'Peru',
+    'الفلبين': 'Philippines', 'philippines': 'Philippines', 'فیلیپین': 'Philippines', '菲律宾': 'Philippines',
+    'بولندا': 'Poland', 'poland': 'Poland', 'لهستان': 'Poland', '波兰': 'Poland',
+    'البرتغال': 'Portugal', 'portugal': 'Portugal', 'پرتغال': 'Portugal', '葡萄牙': 'Portugal',
+    'قطر': 'Qatar', 'qatar': 'Qatar', 'قطر': 'Qatar', '卡塔尔': 'Qatar',
+    'رومانيا': 'Romania', 'romania': 'Romania', 'رومانی': 'Romania', '罗马尼亚': 'Romania',
+    'روسيا': 'Russia', 'russia': 'Russia', 'روسیه': 'Russia', '俄罗斯': 'Russia',
+    'رواندا': 'Rwanda', 'rwanda': 'Rwanda', 'رواندا': 'Rwanda', '卢旺达': 'Rwanda',
+    'سانت كيتس ونيفيس': 'Saint Kitts and Nevis', 'saint kitts and nevis': 'Saint Kitts and Nevis', 'سنت کیتس و نویس': 'Saint Kitts and Nevis', '圣基茨和尼维斯': 'Saint Kitts and Nevis',
+    'سانت لوسيا': 'Saint Lucia', 'saint lucia': 'Saint Lucia', 'سنت لوسیا': 'Saint Lucia', '圣卢西亚': 'Saint Lucia',
+    'ساموا': 'Samoa', 'samoa': 'Samoa', 'ساموآ': 'Samoa', '萨摩亚': 'Samoa',
+    'سان مارينو': 'San Marino', 'san marino': 'San Marino', 'سن مارینو': 'San Marino', '圣马力诺': 'San Marino',
+    'ساو تومي وبرينسيب': 'Sao Tome and Principe', 'sao tome and principe': 'Sao Tome and Principe', 'سائوتومه و پرینسیپ': 'Sao Tome and Principe', '圣多美和普林西比': 'Sao Tome and Principe',
+    'السعودية': 'Saudi Arabia', 'saudi arabia': 'Saudi Arabia', 'ksa': 'Saudi Arabia', 'عربستان': 'Saudi Arabia', '沙特阿拉伯': 'Saudi Arabia',
+    'السنغال': 'Senegal', 'senegal': 'Senegal', 'سنگال': 'Senegal', '塞内加尔': 'Senegal',
+    'صربيا': 'Serbia', 'serbia': 'Serbia', 'صربستان': 'Serbia', '塞尔维亚': 'Serbia',
+    'سيشل': 'Seychelles', 'seychelles': 'Seychelles', 'سیشل': 'Seychelles', '塞舌尔': 'Seychelles',
+    'سيراليون': 'Sierra Leone', 'sierra leone': 'Sierra Leone', 'سیرالئون': 'Sierra Leone', '塞拉利昂': 'Sierra Leone',
+    'سنغافورة': 'Singapore', 'singapore': 'Singapore', 'سنگاپور': 'Singapore', '新加坡': 'Singapore',
+    'سلوفاكيا': 'Slovakia', 'slovakia': 'Slovakia', 'اسلواکی': 'Slovakia', '斯洛伐克': 'Slovakia',
+    'سلوفينيا': 'Slovenia', 'slovenia': 'Slovenia', 'اسلوونی': 'Slovenia', '斯洛文尼亚': 'Slovenia',
+    'جزر سليمان': 'Solomon Islands', 'solomon islands': 'Solomon Islands', 'جزایر سلیمان': 'Solomon Islands', '所罗门群岛': 'Solomon Islands',
+    'الصومال': 'Somalia', 'somalia': 'Somalia', 'سومالی': 'Somalia', '索马里': 'Somalia',
+    'جنوب أفريقيا': 'South Africa', 'south africa': 'South Africa', 'آریقای جنوبی': 'South Africa', '南非': 'South Africa',
+    'كوريا الجنوبية': 'South Korea', 'south korea': 'South Korea', 'کره جنوبی': 'South Korea', '韩国': 'South Korea',
+    'جنوب السودان': 'South Sudan', 'south sudan': 'South Sudan', 'سودان جنوبی': 'South Sudan', '南苏丹': 'South Sudan',
+    'إسبانيا': 'Spain', 'spain': 'Spain', 'اسپانیا': 'Spain', '西班牙': 'Spain',
+    'سريلانكا': 'Sri Lanka', 'sri lanka': 'Sri Lanka', 'سریلانکا': 'Sri Lanka', '斯里兰卡': 'Sri Lanka',
+    'السودان': 'Sudan', 'sudan': 'Sudan', 'سودان': 'Sudan', '苏丹': 'Sudan',
+    'سورينام': 'Suriname', 'suriname': 'Suriname', 'سورینام': 'Suriname', '苏里南': 'Suriname',
+    'السويد': 'Sweden', 'sweden': 'Sweden', 'سوئد': 'Sweden', '瑞典': 'Sweden',
+    'سويسرا': 'Switzerland', 'switzerland': 'Switzerland', 'سوئیس': 'Switzerland', '瑞士': 'Switzerland',
+    'سوريا': 'Syria', 'syria': 'Syria', 'سوریه': 'Syria', '叙利亚': 'Syria',
+    'تايوان': 'Taiwan', 'taiwan': 'Taiwan', 'تایوان': 'Taiwan', '台湾': 'Taiwan',
+    'طاجيكستان': 'Tajikistan', 'tajikistan': 'Tajikistan', 'تاجیکستان': 'Tajikistan', '塔吉克斯坦': 'Tajikistan',
+    'تنزانيا': 'Tanzania', 'tanzania': 'Tanzania', 'تانزانیا': 'Tanzania', '坦桑尼亚': 'Tanzania',
+    'تايلاند': 'Thailand', 'thailand': 'Thailand', 'تایلند': 'Thailand', '泰国': 'Thailand',
+    'تيمور الشرقية': 'Timor-Leste', 'timor-leste': 'Timor-Leste', 'تیمور شرقی': 'Timor-Leste', '东帝汶': 'Timor-Leste',
+    'توغو': 'Togo', 'togo': 'Togo', 'توگو': 'Togo', '多哥': 'Togo',
+    'تونغا': 'Tonga', 'tonga': 'Tonga', 'تونگا': 'Tonga', '汤加': 'Tonga',
+    'ترينيداد وتوباغو': 'Trinidad and Tobago', 'trinidad and tobago': 'Trinidad and Tobago', 'ترینیداد و توباگو': 'Trinidad and Tobago', '特立尼达和多巴哥': 'Trinidad and Tobago',
+    'تونس': 'Tunisia', 'tunisia': 'Tunisia', 'تونس': 'Tunisia', '突尼斯': 'Tunisia',
+    'تركيا': 'Turkey', 'turkey': 'Turkey', 'türkiye': 'Turkey', 'ترکیه': 'Turkey', '土耳其': 'Turkey',
+    'تركمانستان': 'Turkmenistan', 'turkmenistan': 'Turkmenistan', 'ترکمنستان': 'Turkmenistan', '土库曼斯坦': 'Turkmenistan',
+    'توفالو': 'Tuvalu', 'tuvalu': 'Tuvalu', 'تووالو': 'Tuvalu', '图瓦卢': 'Tuvalu',
+    'أوغندا': 'Uganda', 'uganda': 'Uganda', 'اوگاندا': 'Uganda', '乌干达': 'Uganda',
+    'أوكرانيا': 'Ukraine', 'ukraine': 'Ukraine', 'اوکراین': 'Ukraine', '乌克兰': 'Ukraine',
+    'الإمارات': 'United Arab Emirates', 'uae': 'United Arab Emirates', 'dubai': 'United Arab Emirates', 'امارات': 'United Arab Emirates', '阿联酋': 'United Arab Emirates',
+    'بريطانيا': 'United Kingdom', 'uk': 'United Kingdom', 'england': 'United Kingdom', 'انگلستان': 'United Kingdom', '英国': 'United Kingdom',
+    'أمريكا': 'United States', 'usa': 'United States', 'united states': 'United States', 'آمریکا': 'United States', '美国': 'United States',
+    'أوروغواي': 'Uruguay', 'uruguay': 'Uruguay', 'اوروگوئه': 'Uruguay', '乌拉圭': 'Uruguay',
+    'أوزبكستان': 'Uzbekistan', 'uzbekistan': 'Uzbekistan', 'ازبکستان': 'Uzbekistan', '乌兹别克斯坦': 'Uzbekistan',
+    'فانواتو': 'Vanuatu', 'vanuatu': 'Vanuatu', 'وانواتو': 'Vanuatu', '瓦努阿图': 'Vanuatu',
+    'الفاتيكان': 'Vatican City', 'vatican city': 'Vatican City', 'واتیکان': 'Vatican City', '梵蒂冈': 'Vatican City',
+    'فنزويلا': 'Venezuela', 'venezuela': 'Venezuela', 'ونزوئلا': 'Venezuela', '委内瑞拉': 'Venezuela',
+    'فيتنام': 'Vietnam', 'vietnam': 'Vietnam', 'ویتنام': 'Vietnam', '越南': 'Vietnam',
+    'اليمن': 'Yemen', 'yemen': 'Yemen', 'یمن': 'Yemen', '也门': 'Yemen',
+    'زامبيا': 'Zambia', 'zambia': 'Zambia', 'زامبیا': 'Zambia', '赞比亚': 'Zambia',
+    'زيمبابوي': 'Zimbabwe', 'zimbabwe': 'Zimbabwe', 'زیمبابوه': 'Zimbabwe', '津巴布韦': 'Zimbabwe',
 }
 
 @client.on(events.NewMessage(pattern='/start'))
@@ -632,28 +981,33 @@ async def callback(event):
         ]
         await event.edit("<blockquote>⧺︰ <b>اختر لغتك / Select language:</b></blockquote>", buttons=btn, parse_mode='html')
 
+    # قسم الأفراد (يعرض الأقسام المفعلة والظاهرة فقط)
     elif data == 'personal_section':
         await event.answer()
-        btn = [
-            [Button.inline(t['btn_vodafone'], b'cat_vodafone')],
-            [Button.inline(t['btn_holafly'], b'cat_holafly')],
-            [Button.inline(t['btn_maya'], b'cat_maya')],
-            [Button.inline(t['back'], b'main')]
-        ]
+        cats = cur.execute("SELECT slug, name_ar, name_en FROM categories WHERE slug NOT LIKE 'dealer_%' AND is_visible=1").fetchall()
+        btn = []
+        for slug, nar, nen in cats:
+            lbl = nar if lang == 'ar' else nen
+            btn.append([Button.inline(lbl, f'open_cat_{slug}'.encode())])
+        btn.append([Button.inline(t['back'], b'main')])
         await event.edit(f"<blockquote>⧺︰ <b>{t['btn_personal']}</b></blockquote>", buttons=btn, parse_mode='html')
 
-    elif data in ['cat_vodafone', 'cat_holafly', 'cat_maya']:
+    elif data.startswith('open_cat_'):
         await event.answer()
-        cat = data.replace('cat_', '')
-        plans = cur.execute("SELECT id, name, price_usd, months, minutes FROM esims WHERE category=? AND is_dealer=0 ORDER BY months ASC", (cat,)).fetchall()
+        cat = data.replace('open_cat_', '')
+        plans = cur.execute("SELECT id, name, price_usd, months, minutes FROM esims WHERE category=? ORDER BY months ASC", (cat,)).fetchall()
         btn = []
         for pid, name, price, m, mins in plans:
             min_str = f" ({mins} دقيقة)" if mins > 0 else ""
             btn.append([Button.inline(f"{name}{min_str} - ${price:.0f}", f'show_plan_{pid}_1'.encode())])
-        btn.append([Button.inline(t['back'], b'personal_section')])
+        
+        back_btn = b'personal_section' if not cat.startswith('dealer_') else b'dealer_section'
+        btn.append([Button.inline(t['back'], back_btn)])
+        
+        cat_info = cur.execute("SELECT name_ar, name_en FROM categories WHERE slug=?", (cat,)).fetchone()
+        title_cat = (cat_info[0] if lang == 'ar' else cat_info[1]) if cat_info else cat
         policy = WARRANTY_POLICY_TEXT.get(lang, WARRANTY_POLICY_TEXT['ar'])
         select_dur = "اختر المدة المطلوبة:" if lang == 'ar' else "Select desired duration:"
-        title_cat = t[f'btn_{cat}']
         await event.edit(f"<blockquote>⧺︰ <b>{title_cat}</b></blockquote>\n\n{policy}\n\n> ⧺︰ <b>{select_dur}</b>", buttons=btn, parse_mode='html')
 
     # ========================================================
@@ -720,7 +1074,7 @@ async def callback(event):
             [Button.inline(t['pay_binance'], f'show_order_payments_{pid}'.encode())],
             [Button.inline(t['add_to_cart'], f'add_cart_now_{pid}_{qty}'.encode())]
         ]
-        back_dest = b'personal_section' if not is_dealer else b'dealer_section'
+        back_dest = f'open_cat_{cat}'.encode()
         btn.append([Button.inline(t['back'], back_dest)])
 
         try:
@@ -806,29 +1160,18 @@ async def callback(event):
     elif data == 'dealer_section':
         await event.answer()
         api_row = cur.execute("SELECT api_key FROM dealer_api_keys WHERE user_id=?", (uid,)).fetchone()
-        btn = [
-            [Button.inline(t['btn_dealer_vf'], b'dealer_vf_list')],
-            [Button.inline(t['btn_dealer_hf'], b'dealer_hf_list')],
-            [Button.inline(t['btn_dealer_maya'], b'dealer_maya_list')],
-        ]
+        cats = cur.execute("SELECT slug, name_ar, name_en FROM categories WHERE slug LIKE 'dealer_%' AND is_visible=1").fetchall()
+        btn = []
+        for slug, nar, nen in cats:
+            lbl = nar if lang == 'ar' else nen
+            btn.append([Button.inline(lbl, f'open_cat_{slug}'.encode())])
+        
         if not api_row:
             btn.append([Button.inline(t['btn_dealer_api'], b'buy_api_sub_menu')])
         else:
             btn.append([Button.inline("عرض تفاصيل مفتاح الـ API", b'view_api_key_info')])
         btn.append([Button.inline(t['back'], b'main')])
         await event.edit(f"<blockquote>⧺︰ <b>{t['dealer_title']}</b></blockquote>", buttons=btn, parse_mode='html')
-
-    elif data in ['dealer_vf_list', 'dealer_hf_list', 'dealer_maya_list']:
-        await event.answer()
-        plans = cur.execute("SELECT id, name, price_usd, months, minutes FROM esims WHERE category='dealer' ORDER BY months ASC").fetchall()
-        api_chk = cur.execute("SELECT id FROM dealer_api_keys WHERE user_id=?", (uid,)).fetchone()
-        discount_mult = 0.5 if api_chk else 1.0
-        btn = []
-        for pid, name, price, m, mins in plans:
-            final_p = price * discount_mult
-            btn.append([Button.inline(f"{name} (${final_p:.0f})", f'show_plan_{pid}_1'.encode())])
-        btn.append([Button.inline(t['back'], b'dealer_section')])
-        await event.edit("<blockquote>💼 <b>باقات الجملة 10 شرائح (خصم 50% لمشتركي الـ API):</b></blockquote>", buttons=btn, parse_mode='html')
 
     elif data == 'buy_api_sub_menu':
         await event.answer()
@@ -993,9 +1336,9 @@ async def callback(event):
         ]
         await event.edit(details_text, buttons=btn, parse_mode='html')
 
-    # ==========================================
-    # لوحة تحكم الأدمن
-    # ==========================================
+    # ========================================================
+    # 7. لوحة تحكم الأدمن الشاملة والمطورة
+    # ========================================================
     elif data == 'admin_panel' and is_admin(uid):
         await event.answer()
         total_sales = cur.execute("SELECT COUNT(*) FROM orders WHERE status='paid'").fetchone()[0]
@@ -1003,7 +1346,11 @@ async def callback(event):
         total_esims = cur.execute("SELECT SUM(stock) FROM esims").fetchone()[0] or 0
         total_users = cur.execute("SELECT COUNT(*) FROM users_settings").fetchone()[0] or 0
         btn = [
-            [Button.inline("إضافة رصيد لعميل", b'admin_add_balance'), Button.inline("خصم رصيد", b'admin_sub_balance')],
+            [Button.inline("📂 إدارة الأقسام (إضافة/حذف/إخفاء)", b'adm_cats_mgr')],
+            [Button.inline("📦 إدارة وتصفير الشرائح الفردية", b'adm_plans_mgr')],
+            [Button.inline("➕ إضافة شريحة جديدة لقسم", b'adm_plan_add_start')],
+            [Button.inline("💳 إدارة طرق وشبكات الدفع", b'adm_pay_mgr')],
+            [Button.inline("💰 شحن رصيد لعميل", b'admin_add_balance'), Button.inline("📉 خصم رصيد", b'admin_sub_balance')],
             [Button.inline("تصفير رصيد عميل", b'admin_zero_balance'), Button.inline("إضافة مخزون عام", b'admin_add_stock')],
             [Button.inline("حظر / فك حظر", b'admin_manage_bans'), Button.inline("إذاعة عامة", b'admin_broadcast_msg')],
             [Button.inline(t['back'], b'main')]
@@ -1017,6 +1364,194 @@ async def callback(event):
             buttons=btn, parse_mode='html'
         )
 
+    # ------------------ إدارة الأقسام ------------------
+    elif data == 'adm_cats_mgr' and is_admin(uid):
+        await event.answer()
+        cats = cur.execute("SELECT slug, name_ar, is_visible FROM categories").fetchall()
+        txt = "<blockquote>📂 <b>إدارة الأقسام (إخفاء / إظهار / حذف / إضافة):</b></blockquote>\n\n"
+        btn = []
+        for slug, nar, vis in cats:
+            status_icon = "👁️ ظاهر" if vis == 1 else "🙈 مخفي"
+            btn.append([Button.inline(f"{nar} ({status_icon})", f"adm_cat_det_{slug}".encode())])
+        
+        btn.append([Button.inline("➕ إضافة قسم جديد", b'adm_cat_add')])
+        btn.append([Button.inline(t['back'], b'admin_panel')])
+        await event.edit(txt, buttons=btn, parse_mode='html')
+
+    elif data.startswith('adm_cat_det_') and is_admin(uid):
+        await event.answer()
+        slug = data.replace('adm_cat_det_', '')
+        cat = cur.execute("SELECT name_ar, is_visible FROM categories WHERE slug=?", (slug,)).fetchone()
+        if not cat: return
+        nar, vis = cat
+        toggle_label = "إخفاء القسم عن المستخدمين" if vis == 1 else "إظهار القسم للمستخدمين"
+        btn = [
+            [Button.inline(toggle_label, f"adm_cat_toggle_{slug}".encode())],
+            [Button.inline("🗑️ حذف القسم مع شرائحه", f"adm_cat_delete_{slug}".encode())],
+            [Button.inline(t['back'], b'adm_cats_mgr')]
+        ]
+        await event.edit(f"<blockquote>📂 <b>إدارة القسم: {nar}</b>\nالحالة الحالية: <b>{'ظاهر' if vis==1 else 'مخفي'}</b></blockquote>", buttons=btn, parse_mode='html')
+
+    elif data.startswith('adm_cat_toggle_') and is_admin(uid):
+        await event.answer()
+        slug = data.replace('adm_cat_toggle_', '')
+        cur.execute("UPDATE categories SET is_visible = CASE WHEN is_visible=1 THEN 0 ELSE 1 END WHERE slug=?", (slug,))
+        conn.commit()
+        await event.answer("تم تبديل حالة القسم بنجاح!", alert=True)
+        event.data = f"adm_cat_det_{slug}".encode()
+        await callback(event)
+
+    elif data.startswith('adm_cat_delete_') and is_admin(uid):
+        await event.answer()
+        slug = data.replace('adm_cat_delete_', '')
+        cur.execute("DELETE FROM categories WHERE slug=?", (slug,))
+        cur.execute("DELETE FROM esims WHERE category=?", (slug,))
+        conn.commit()
+        await event.answer("تم حذف القسم وكافة شرائحه بنجاح!", alert=True)
+        event.data = b'adm_cats_mgr'
+        await callback(event)
+
+    elif data == 'adm_cat_add' and is_admin(uid):
+        await event.answer()
+        SessionManager.set(uid, f'adm_new_cat_{uid}', True)
+        await event.edit("أرسل بيانات القسم الجديد بالصيغة:\n<code>المعرف(slug) | اسم القسم بالعربي | Name in English</code>\n\nمثال:\n<code>zain | باقات زين الدولية | Zain Plans</code>", buttons=[[Button.inline(t['back'], b'adm_cats_mgr')]], parse_mode='html')
+
+    # ------------------ إضافة شريحة جديدة ------------------
+    elif data == 'adm_plan_add_start' and is_admin(uid):
+        await event.answer()
+        cats = cur.execute("SELECT slug, name_ar FROM categories").fetchall()
+        cats_list_str = "\n".join([f"• <code>{s}</code> ({n})" for s, n in cats])
+        SessionManager.set(uid, f'adm_add_plan_input_{uid}', True)
+        msg_input = f"""<blockquote>➕ <b>إضافة شريحة جديدة لقسم معين:</b>
+الأقسام المتاحة حالياً:
+{cats_list_str}
+
+أرسل البيانات بسطر واحد بالصيغة التالية:
+<code>المعرف(slug) | اسم الشريحة | السعر | الدقائق | الشهور | المخزون | جملة(1 أو 0) | الوصف</code>
+
+مثال:
+<code>vodafone | باقة الصيف 50GB | 25 | 1000 | 1 | 500 | 0 | باقة مميزة للمسافرين</code></blockquote>"""
+        await event.edit(msg_input, buttons=[[Button.inline(t['back'], b'admin_panel')]], parse_mode='html')
+
+    # ------------------ إدارة وتصفير الشرائح الفردية ------------------
+    elif data == 'adm_plans_mgr' and is_admin(uid):
+        await event.answer()
+        plans = cur.execute("SELECT id, name, price_usd, stock FROM esims LIMIT 25").fetchall()
+        txt = "<blockquote>📦 <b>إدارة الشرائح والمخزون الفردي:</b>\nاختر شريحة لتصفيرها أو تعديل سعرها ومخزونها:</blockquote>\n\n"
+        btn = []
+        for pid, name, pr, st in plans:
+            btn.append([Button.inline(f"{name} | ${pr:.0f} | متبقي: {st}", f"adm_plan_det_{pid}".encode())])
+        
+        btn.append([Button.inline(t['back'], b'admin_panel')])
+        await event.edit(txt, buttons=btn, parse_mode='html')
+
+    elif data.startswith('adm_plan_det_') and is_admin(uid):
+        await event.answer()
+        pid = int(data.split('_')[3])
+        plan = cur.execute("SELECT id, name, price_usd, stock, minutes, months FROM esims WHERE id=?", (pid,)).fetchone()
+        if not plan: return
+        esim_id, name, pr, st, mins, mo = plan
+        SessionManager.set(uid, f'target_plan_id_{uid}', pid)
+        
+        info = f"""<blockquote>📦 <b>إدارة الشريحة: {name}</b>
+• <b>المدة:</b> <code>{mo} شهر</code>
+• <b>الدقائق:</b> <code>{mins} دقيقة</code>
+• <b>السعر:</b> <code>${pr:.2f}</code>
+• <b>المخزون الحالي:</b> <code>{st} قطعة</code></blockquote>"""
+
+        btn = [
+            [Button.inline("🚫 تصفير مخزون الشريحة (نفاد المخزون)", f"adm_plan_zero_{pid}".encode())],
+            [Button.inline("✏️ تعديل السعر", b'adm_edit_plan_price'), Button.inline("📦 تعبئة المخزون", b'adm_edit_plan_stock')],
+            [Button.inline("🗑️ حذف هذه الشريحة نهائياً", f"adm_plan_delete_{pid}".encode())],
+            [Button.inline(t['back'], b'adm_plans_mgr')]
+        ]
+        await event.edit(info, buttons=btn, parse_mode='html')
+
+    elif data.startswith('adm_plan_zero_') and is_admin(uid):
+        await event.answer()
+        pid = int(data.split('_')[3])
+        cur.execute("UPDATE esims SET stock = 0 WHERE id=?", (pid,))
+        conn.commit()
+        await event.answer("تم تصفير مخزون الشريحة وأصبحت غير متاحة للشراء!", alert=True)
+        event.data = f"adm_plan_det_{pid}".encode()
+        await callback(event)
+
+    elif data.startswith('adm_plan_delete_') and is_admin(uid):
+        await event.answer()
+        pid = int(data.split('_')[3])
+        cur.execute("DELETE FROM esims WHERE id=?", (pid,))
+        conn.commit()
+        await event.answer("تم حذف الشريحة نهائياً!", alert=True)
+        event.data = b'adm_plans_mgr'
+        await callback(event)
+
+    elif data == 'adm_edit_plan_price' and is_admin(uid):
+        await event.answer()
+        SessionManager.set(uid, f'action_plan_price_{uid}', True)
+        await event.edit("أرسل السعر الجديد بالدولار لهذه الشريحة (مثال: <code>25.5</code>):", buttons=[[Button.inline(t['back'], b'adm_plans_mgr')]], parse_mode='html')
+
+    elif data == 'adm_edit_plan_stock' and is_admin(uid):
+        await event.answer()
+        SessionManager.set(uid, f'action_plan_stock_{uid}', True)
+        await event.edit("أرسل كمية المخزون الجديدة للشريحة (مثال: <code>100</code>):", buttons=[[Button.inline(t['back'], b'adm_plans_mgr')]], parse_mode='html')
+
+    # ------------------ إدارة طرق وشبكات الدفع ------------------
+    elif data == 'adm_pay_mgr' and is_admin(uid):
+        await event.answer()
+        nets = cur.execute("SELECT network_key, network_name, address, binance_id FROM binance_networks").fetchall()
+        txt = "<blockquote>💳 <b>إدارة طرق وعناوين وشبكات الدفع:</b>\nاختر وسيلة لتعديلها أو حذفها، أو أضف وسيلة جديدة:</blockquote>\n\n"
+        btn = []
+        for k, name, addr, bid in nets:
+            val = bid if bid else (addr[:12] + "...")
+            btn.append([Button.inline(f"{name} ({val})", f"adm_pay_det_{k}".encode())])
+        
+        btn.append([Button.inline("➕ إضافة شبكة/وسيلة دفع جديدة", b'adm_pay_add')])
+        btn.append([Button.inline(t['back'], b'admin_panel')])
+        await event.edit(txt, buttons=btn, parse_mode='html')
+
+    elif data.startswith('adm_pay_det_') and is_admin(uid):
+        await event.answer()
+        key = data.replace('adm_pay_det_', '')
+        net = cur.execute("SELECT network_key, network_name, address, binance_id FROM binance_networks WHERE network_key=?", (key,)).fetchone()
+        if not net: return
+        k, name, addr, bid = net
+        SessionManager.set(uid, f'target_pay_key_{uid}', k)
+        info = f"""<blockquote>💳 <b>تعديل طريقة الدفع:</b>
+• الاسم: <b>{name}</b>
+• العنوان: <code>{addr if addr else 'غير محدد'}</code>
+• ID / Pay ID: <code>{bid if bid else 'غير محدد'}</code></blockquote>"""
+        btn = [
+            [Button.inline("تعديل العنوان", b'adm_pay_set_addr'), Button.inline("تعديل الـ ID", b'adm_pay_set_id')],
+            [Button.inline("🗑️ حذف وسيلة الدفع", f"adm_pay_delete_{k}".encode())],
+            [Button.inline(t['back'], b'adm_pay_mgr')]
+        ]
+        await event.edit(info, buttons=btn, parse_mode='html')
+
+    elif data.startswith('adm_pay_delete_') and is_admin(uid):
+        await event.answer()
+        key = data.replace('adm_pay_delete_', '')
+        cur.execute("DELETE FROM binance_networks WHERE network_key=?", (key,))
+        conn.commit()
+        await event.answer("تم حذف وسيلة الدفع بنجاح!", alert=True)
+        event.data = b'adm_pay_mgr'
+        await callback(event)
+
+    elif data == 'adm_pay_set_addr' and is_admin(uid):
+        await event.answer()
+        SessionManager.set(uid, f'adm_pay_set_addr_{uid}', True)
+        await event.edit("أرسل العنوان الجديد (Wallet Address):", buttons=[[Button.inline(t['back'], b'adm_pay_mgr')]], parse_mode='html')
+
+    elif data == 'adm_pay_set_id' and is_admin(uid):
+        await event.answer()
+        SessionManager.set(uid, f'adm_pay_set_id_{uid}', True)
+        await event.edit("أرسل الـ ID الجديد (Binance/Pay ID):", buttons=[[Button.inline(t['back'], b'adm_pay_mgr')]], parse_mode='html')
+
+    elif data == 'adm_pay_add' and is_admin(uid):
+        await event.answer()
+        SessionManager.set(uid, f'adm_new_pay_{uid}', True)
+        await event.edit("أرسل وسيلة الدفع الجديدة بالصيغة:\n<code>اسم الشبكة | العنوان أو المحفظة | ID المنصة (اختياري)</code>\n\nمثال:\n<code>USDT (Polygon) | 0x334c55fe51757ac... | </code>", buttons=[[Button.inline(t['back'], b'adm_pay_mgr')]], parse_mode='html')
+
+    # ------------------ الرصيد والمخزون والإذاعة ------------------
     elif data == 'admin_add_balance' and is_admin(uid):
         await event.answer()
         SessionManager.set(uid, f'add_balance_{uid}', True)
@@ -1076,7 +1611,7 @@ async def handler(event):
     if is_banned(uid) or (event.text and event.text.startswith('/')): return
 
     now = time.time()
-    if uid in user_rate_limits and now - user_rate_limits[uid] < 0.4:
+    if uid in user_rate_limits and now - user_rate_limits[uid] < 0.3:
         return
     user_rate_limits[uid] = now
 
@@ -1084,6 +1619,7 @@ async def handler(event):
     lang = get_user_lang(uid) or 'ar'
     t = LANGS.get(lang, LANGS['ar'])
 
+    # شحن المحفظة
     if SessionManager.has(uid, f'charge_amount_prompt_{uid}'):
         SessionManager.remove(uid, f'charge_amount_prompt_{uid}')
         try:
@@ -1139,7 +1675,87 @@ async def handler(event):
         await client.send_message(DEV_ID, f"<blockquote>💬 <b>تذكرة دعم من المستخدم:</b> <code>{uid}</code>\n\n{text}</blockquote>", parse_mode='html')
         return
 
-    # أوامر الأدمن النصية
+    # أوامر الأدمن: إضافة شريحة جديدة
+    elif SessionManager.has(uid, f'adm_add_plan_input_{uid}') and is_admin(uid):
+        SessionManager.remove(uid, f'adm_add_plan_input_{uid}')
+        try:
+            parts = [x.strip() for x in text.split('|')]
+            cat, name, price, mins, months, stock, is_dlr, desc = parts
+            code_key = f"{cat}_{secrets.token_hex(3)}"
+            cur.execute('''INSERT INTO esims 
+                (category, name, code_key, price_usd, minutes, months, stock, min_qty, is_dealer, description)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                (cat, name, code_key, float(price), int(mins), int(months), int(stock), 1, int(is_dlr), desc))
+            conn.commit()
+            await event.reply(f"✅ تمت إضافة الشريحة <b>{name}</b> بنجاح إلى القسم <code>{cat}</code>!", buttons=[[Button.inline("إدارة الشرائح", b'adm_plans_mgr')]], parse_mode='html')
+        except Exception as e:
+            await event.reply(f"❌ خطأ أثناء الإضافة، تأكد من الصيغة: {e}")
+
+    # أوامر الأدمن: إضافة قسم جديد
+    elif SessionManager.has(uid, f'adm_new_cat_{uid}') and is_admin(uid):
+        SessionManager.remove(uid, f'adm_new_cat_{uid}')
+        try:
+            slug, nar, nen = [x.strip() for x in text.split('|')]
+            cur.execute("INSERT OR REPLACE INTO categories (slug, name_ar, name_en, is_visible) VALUES (?, ?, ?, 1)", (slug, nar, nen))
+            conn.commit()
+            await event.reply(f"✅ تمت إضافة القسم <b>{nar}</b> بنجاح!", buttons=[[Button.inline("إدارة الأقسام", b'adm_cats_mgr')]], parse_mode='html')
+        except Exception as e:
+            await event.reply(f"❌ خطأ بالصيغة: {e}")
+
+    # أوامر الأدمن: تعديل سعر شريحة
+    elif SessionManager.has(uid, f'action_plan_price_{uid}') and is_admin(uid):
+        SessionManager.remove(uid, f'action_plan_price_{uid}')
+        pid = SessionManager.get(uid, f'target_plan_id_{uid}')
+        try:
+            pr = float(text)
+            cur.execute("UPDATE esims SET price_usd=? WHERE id=?", (pr, pid))
+            conn.commit()
+            await event.reply(f"✅ تم تحديث السعر إلى <b>${pr:.2f}</b> بنجاح!", buttons=[[Button.inline("لوحة الشرائح", b'adm_plans_mgr')]], parse_mode='html')
+        except:
+            await event.reply("يرجى إرسال رقم صحيح.")
+
+    # أوامر الأدمن: تعديل مخزون شريحة
+    elif SessionManager.has(uid, f'action_plan_stock_{uid}') and is_admin(uid):
+        SessionManager.remove(uid, f'action_plan_stock_{uid}')
+        pid = SessionManager.get(uid, f'target_plan_id_{uid}')
+        try:
+            st = int(text)
+            cur.execute("UPDATE esims SET stock=? WHERE id=?", (st, pid))
+            conn.commit()
+            await event.reply(f"✅ تم تحديث المخزون إلى <b>{st}</b> قطعة بنجاح!", buttons=[[Button.inline("لوحة الشرائح", b'adm_plans_mgr')]], parse_mode='html')
+        except:
+            await event.reply("يرجى إرسال رقم صحيح.")
+
+    # أوامر الأدمن: إضافة وسيلة دفع
+    elif SessionManager.has(uid, f'adm_new_pay_{uid}') and is_admin(uid):
+        SessionManager.remove(uid, f'adm_new_pay_{uid}')
+        try:
+            parts = [x.strip() for x in text.split('|')]
+            name = parts[0]
+            addr = parts[1] if len(parts) > 1 else ""
+            bid = parts[2] if len(parts) > 2 else ""
+            k = f"pay_{secrets.token_hex(4)}"
+            cur.execute("INSERT OR REPLACE INTO binance_networks (network_key, network_name, address, binance_id) VALUES (?, ?, ?, ?)", (k, name, addr, bid))
+            conn.commit()
+            await event.reply(f"✅ تمت إضافة وسيلة الدفع <b>{name}</b> بنجاح!", buttons=[[Button.inline("إدارة طرق الدفع", b'adm_pay_mgr')]], parse_mode='html')
+        except Exception as e:
+            await event.reply(f"❌ خطأ: {e}")
+
+    elif SessionManager.has(uid, f'adm_pay_set_addr_{uid}') and is_admin(uid):
+        SessionManager.remove(uid, f'adm_pay_set_addr_{uid}')
+        k = SessionManager.get(uid, f'target_pay_key_{uid}')
+        cur.execute("UPDATE binance_networks SET address=? WHERE network_key=?", (text, k))
+        conn.commit()
+        await event.reply("✅ تم تحديث العنوان بنجاح!", buttons=[[Button.inline("إدارة طرق الدفع", b'adm_pay_mgr')]], parse_mode='html')
+
+    elif SessionManager.has(uid, f'adm_pay_set_id_{uid}') and is_admin(uid):
+        SessionManager.remove(uid, f'adm_pay_set_id_{uid}')
+        k = SessionManager.get(uid, f'target_pay_key_{uid}')
+        cur.execute("UPDATE binance_networks SET binance_id=? WHERE network_key=?", (text, k))
+        conn.commit()
+        await event.reply("✅ تم تحديث الـ ID بنجاح!", buttons=[[Button.inline("إدارة طرق الدفع", b'adm_pay_mgr')]], parse_mode='html')
+
+    # الرصيد والمخزون والإذاعة
     elif SessionManager.has(uid, f'add_balance_{uid}') and is_admin(uid):
         SessionManager.remove(uid, f'add_balance_{uid}')
         try:
@@ -1215,7 +1831,7 @@ async def handler(event):
 # ==========================================
 async def main():
     await client.start(bot_token=BOT_TOKEN)
-    logger.info("Aura eSIM Elite Bot running smoothly with quantity selection & 10% discount.")
+    logger.info("Aura eSIM Elite Bot running smoothly with dynamic admin controls.")
     await client.run_until_disconnected()
 
 if __name__ == '__main__':
