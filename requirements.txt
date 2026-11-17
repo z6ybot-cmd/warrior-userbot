@@ -17,3 +17,4 @@ Flask
 Werkzeug
 aiosqlite
 python-dotenv
+pyrogram
