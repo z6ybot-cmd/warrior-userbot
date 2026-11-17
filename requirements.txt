@@ -16,3 +16,4 @@ mutagen
 Flask
 Werkzeug
 aiosqlite
+python-dotenv
