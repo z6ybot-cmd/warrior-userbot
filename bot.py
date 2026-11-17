@@ -1,4 +1,5 @@
 import os
+import re
 import asyncio
 import sqlite3
 import secrets
@@ -8,9 +9,11 @@ import time
 import logging
 import random
 import json
+from html.parser import HTMLParser
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from telethon import TelegramClient, events, Button, errors
+from telethon.tl import types as tl_types
 
 # ==========================================
 # 1. نظام سجلات الأحداث (Logging System)
@@ -35,173 +38,530 @@ DEFAULT_LPA = "LPA:1$hfy.prod.ondemandconnectivity.com$FA1BEB0FB081104C79BAD7E29
 DEFAULT_BARCODE = f"https://api.qrserver.com/v1/create-qr-code/?data={DEFAULT_LPA}&size=500x500"
 
 CHANNEL_ID = -1003968712197
+CUSTOM_EMOJIS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "custom_emojis.json")
+
+# ==========================================
+# 2. نظام إدارة Telegram Premium Custom Emojis
+# ==========================================
+DEFAULT_CUSTOM_EMOJI_SCHEMA = {
+    "store": {"store_logo": "", "store_banner": "", "home": "", "personal_section": "", "welcome_spark": ""},
+    "products": {"product": "", "vodafone": "", "holafly": "", "maya": "", "sim_card": "", "global_plan": "", "discount": "", "stock": ""},
+    "countries": {"countries_globe": "", "coverage": "", "country_default": ""},
+    "wallet": {"wallet": "", "balance": "", "deposit": "", "withdraw": "", "referral": ""},
+    "payments": {"payment": "", "binance": "", "bybit": "", "crypto": "", "invoice": "", "receipt": ""},
+    "orders": {"orders": "", "cart": "", "cart_add": "", "cart_remove": "", "qr_code": "", "lpa_code": ""},
+    "vip": {"vip": "", "premium": "", "crown": "", "warranty": ""},
+    "dealers": {"dealer": "", "api_key": "", "wholesale": ""},
+    "admin": {"admin_panel": "", "users": "", "categories": "", "ban": "", "broadcast": "", "stats": ""},
+    "developers": {"developer": "", "system": "", "logs": ""},
+    "support": {"support": "", "ticket": "", "reply": ""},
+    "success": {"success": "", "verified": "", "approved": ""},
+    "failure": {"error": "", "rejected": "", "out_of_stock": ""},
+    "warning": {"warning": "", "low_stock": "", "alert": ""},
+    "pending": {"pending": "", "loading": "", "processing": ""},
+    "settings": {"settings": "", "language": "", "lang_ar": "", "lang_en": ""},
+}
+
+CATEGORY_LABELS_AR = {
+    "store": "المتجر",
+    "products": "المنتجات والباقات",
+    "countries": "الدول",
+    "wallet": "المحفظة",
+    "payments": "المدفوعات",
+    "orders": "الطلبات",
+    "vip": "VIP وPremium",
+    "dealers": "التجار",
+    "admin": "الإدارة",
+    "developers": "المطورين",
+    "support": "الدعم الفني",
+    "success": "النجاح",
+    "failure": "الفشل",
+    "warning": "التحذير",
+    "pending": "الانتظار",
+    "settings": "الإعدادات",
+}
+
+
+class PremiumEmojiManager:
+    """مدير مركزي لإيموجيات Telegram Premium المخصصة فقط بدون أي Unicode Emojis."""
+
+    def __init__(self, config_path: str = CUSTOM_EMOJIS_FILE):
+        self.config_path = config_path
+        self.data = {}
+        self.load()
+
+    @staticmethod
+    def validate_id(raw_val) -> str:
+        if raw_val is None:
+            return ""
+        s = str(raw_val).strip()
+        if not s:
+            return ""
+        if not s.isdigit():
+            return ""
+        if len(s) < 10 or int(s) <= 0:
+            return ""
+        return s
+
+    def load(self):
+        merged = {cat: dict(keys) for cat, keys in DEFAULT_CUSTOM_EMOJI_SCHEMA.items()}
+        if os.path.exists(self.config_path):
+            try:
+                with open(self.config_path, "r", encoding="utf-8") as f:
+                    raw = json.load(f)
+                if isinstance(raw, dict):
+                    for cat, keys in raw.items():
+                        if cat.startswith("_") or not isinstance(keys, dict):
+                            continue
+                        if cat not in merged:
+                            merged[cat] = {}
+                        for k, v in keys.items():
+                            merged[cat][k] = self.validate_id(v)
+            except Exception as e:
+                logger.warning(f"Failed loading custom_emojis.json: {e}")
+        self.data = merged
+
+    def save(self):
+        payload = {
+            "_meta": {
+                "description": "Centralized Telegram Premium Custom Emoji IDs for Aura eSIM Elite.",
+                "version": "1.0",
+            }
+        }
+        payload.update(self.data)
+        try:
+            with open(self.config_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"Failed saving custom_emojis.json: {e}")
+
+    def sync_from_db(self, db_conn):
+        try:
+            row = db_conn.execute("SELECT value FROM settings WHERE key='custom_emojis_json'").fetchone()
+            if row and row[0]:
+                raw = json.loads(row[0])
+                if isinstance(raw, dict):
+                    for cat, keys in raw.items():
+                        if cat.startswith("_") or not isinstance(keys, dict):
+                            continue
+                        self.data.setdefault(cat, {})
+                        for k, v in keys.items():
+                            self.data[cat][k] = self.validate_id(v)
+        except Exception as e:
+            logger.warning(f"sync_from_db custom emojis skipped: {e}")
+
+    def save_to_db(self, db_conn):
+        try:
+            db_conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+                ("custom_emojis_json", json.dumps(self.data, ensure_ascii=False))
+            )
+            db_conn.commit()
+        except Exception as e:
+            logger.error(f"save_to_db custom emojis error: {e}")
+
+    def get_id(self, key: str, category: str = None) -> str:
+        if category and category in self.data:
+            return self.validate_id(self.data[category].get(key, ""))
+        for cat, keys in self.data.items():
+            if key in keys:
+                return self.validate_id(keys[key])
+        return ""
+
+    def set_id(self, category: str, key: str, raw_id: str, db_conn=None) -> tuple:
+        if category not in self.data:
+            return False, "تصنيف الإيموجي غير موجود."
+        s = str(raw_id or "").strip()
+        if s in ("", "0", "clear", "none", "-"):
+            self.data[category][key] = ""
+            self.save()
+            if db_conn is not None:
+                self.save_to_db(db_conn)
+            return True, "تم مسح معرف الإيموجي المخصص بنجاح."
+        valid = self.validate_id(s)
+        if not valid:
+            return False, "معرف Custom Emoji غير صالح. يجب أن يكون رقماً صحيحاً مكوناً من 10 أرقام على الأقل."
+        self.data[category][key] = valid
+        self.save()
+        if db_conn is not None:
+            self.save_to_db(db_conn)
+        return True, "تم حفظ معرف الإيموجي المخصص بنجاح."
+
+    def tag(self, key: str, category: str = None, space_after: bool = True) -> str:
+        eid = self.get_id(key, category=category)
+        if not eid:
+            return ""
+        suffix = " " if space_after else ""
+        return f'<tg-emoji emoji-id="{eid}">✦</tg-emoji>{suffix}'
+
+
+emoji_mgr = PremiumEmojiManager()
+
+
+def ce(key: str, category: str = None, space_after: bool = True) -> str:
+    return emoji_mgr.tag(key, category=category, space_after=space_after)
+
+
+def _utf16_len(s: str) -> int:
+    return len(s.encode("utf-16-le")) // 2
+
+
+class _TelethonHTMLParser(HTMLParser):
+    """محلل HTML متوافق مع Telethon يدعم <tg-emoji> و <blockquote> مع حساب إزاحات UTF-16 بدقة."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.text_parts = []
+        self.utf16_offset = 0
+        self.stack = []
+        self.entities = []
+
+    def handle_starttag(self, tag, attrs):
+        tag = tag.lower()
+        attr_map = dict(attrs)
+        self.stack.append((tag, self.utf16_offset, attr_map))
+
+    def handle_data(self, data):
+        if not data:
+            return
+        self.text_parts.append(data)
+        self.utf16_offset += _utf16_len(data)
+
+    def handle_endtag(self, tag):
+        tag = tag.lower()
+        idx = None
+        for i in range(len(self.stack) - 1, -1, -1):
+            if self.stack[i][0] == tag:
+                idx = i
+                break
+        if idx is None:
+            return
+        _, start_off, attr_map = self.stack.pop(idx)
+        length = self.utf16_offset - start_off
+        if length <= 0:
+            return
+
+        if tag in ("b", "strong") and hasattr(tl_types, "MessageEntityBold"):
+            self.entities.append(tl_types.MessageEntityBold(start_off, length))
+        elif tag in ("i", "em") and hasattr(tl_types, "MessageEntityItalic"):
+            self.entities.append(tl_types.MessageEntityItalic(start_off, length))
+        elif tag == "u" and hasattr(tl_types, "MessageEntityUnderline"):
+            self.entities.append(tl_types.MessageEntityUnderline(start_off, length))
+        elif tag in ("s", "del", "strike") and hasattr(tl_types, "MessageEntityStrike"):
+            self.entities.append(tl_types.MessageEntityStrike(start_off, length))
+        elif tag == "code" and hasattr(tl_types, "MessageEntityCode"):
+            self.entities.append(tl_types.MessageEntityCode(start_off, length))
+        elif tag == "pre" and hasattr(tl_types, "MessageEntityPre"):
+            self.entities.append(tl_types.MessageEntityPre(start_off, length, attr_map.get("language", "")))
+        elif tag == "a" and attr_map.get("href") and hasattr(tl_types, "MessageEntityTextUrl"):
+            self.entities.append(tl_types.MessageEntityTextUrl(start_off, length, attr_map["href"]))
+        elif tag == "blockquote" and hasattr(tl_types, "MessageEntityBlockquote"):
+            self.entities.append(tl_types.MessageEntityBlockquote(start_off, length))
+        elif tag == "tg-emoji":
+            eid = PremiumEmojiManager.validate_id(attr_map.get("emoji-id"))
+            if eid and hasattr(tl_types, "MessageEntityCustomEmoji"):
+                self.entities.append(tl_types.MessageEntityCustomEmoji(start_off, length, int(eid)))
+
+
+def render_html_entities(html_text: str) -> tuple:
+    if not html_text:
+        return "", []
+    parser = _TelethonHTMLParser()
+    parser.feed(html_text)
+    parser.close()
+    plain = "".join(parser.text_parts)
+    return plain, parser.entities
+
+
+def strip_custom_emoji_entities(entities: list) -> list:
+    custom_cls = getattr(tl_types, "MessageEntityCustomEmoji", None)
+    if not custom_cls:
+        return list(entities or [])
+    return [e for e in (entities or []) if not isinstance(e, custom_cls)]
+
+
+def _is_custom_emoji_error(exc: Exception) -> bool:
+    name = type(exc).__name__.upper()
+    msg = str(exc).upper()
+    return any(tok in name or tok in msg for tok in ("DOCUMENT_INVALID", "DOCUMENTINVALID", "CUSTOM_EMOJI", "ENTITY"))
+
+
+async def safe_answer(event, text: str = None, alert: bool = False):
+    try:
+        if text is not None:
+            await event.answer(text, alert=alert)
+        else:
+            await event.answer()
+    except Exception:
+        pass
+
+
+async def safe_send(peer, html_text: str, buttons=None, file=None):
+    plain, entities = render_html_entities(html_text)
+    try:
+        if file is not None:
+            return await client.send_file(peer, file, caption=plain, formatting_entities=entities, buttons=buttons)
+        return await client.send_message(peer, plain, formatting_entities=entities, buttons=buttons)
+    except Exception as e:
+        if _is_custom_emoji_error(e):
+            clean_ent = strip_custom_emoji_entities(entities)
+            if file is not None:
+                return await client.send_file(peer, file, caption=plain, formatting_entities=clean_ent, buttons=buttons)
+            return await client.send_message(peer, plain, formatting_entities=clean_ent, buttons=buttons)
+        raise
+
+
+async def safe_reply(event, html_text: str, buttons=None, file=None):
+    plain, entities = render_html_entities(html_text)
+    try:
+        if file is not None:
+            return await event.reply(plain, file=file, formatting_entities=entities, buttons=buttons)
+        return await event.reply(plain, formatting_entities=entities, buttons=buttons)
+    except Exception as e:
+        if _is_custom_emoji_error(e):
+            clean_ent = strip_custom_emoji_entities(entities)
+            if file is not None:
+                return await event.reply(plain, file=file, formatting_entities=clean_ent, buttons=buttons)
+            return await event.reply(plain, formatting_entities=clean_ent, buttons=buttons)
+        raise
+
+
+async def safe_respond(event, html_text: str, buttons=None):
+    plain, entities = render_html_entities(html_text)
+    try:
+        return await event.respond(plain, formatting_entities=entities, buttons=buttons)
+    except Exception as e:
+        if _is_custom_emoji_error(e):
+            clean_ent = strip_custom_emoji_entities(entities)
+            return await event.respond(plain, formatting_entities=clean_ent, buttons=buttons)
+        raise
+
+
+async def safe_edit(event, html_text: str, buttons=None):
+    plain, entities = render_html_entities(html_text)
+    try:
+        return await event.edit(plain, formatting_entities=entities, buttons=buttons)
+    except errors.MessageNotModifiedError:
+        return None
+    except Exception as e:
+        if _is_custom_emoji_error(e):
+            try:
+                clean_ent = strip_custom_emoji_entities(entities)
+                return await event.edit(plain, formatting_entities=clean_ent, buttons=buttons)
+            except errors.MessageNotModifiedError:
+                return None
+            except Exception:
+                return await safe_reply(event, html_text, buttons=buttons)
+        try:
+            return await safe_reply(event, html_text, buttons=buttons)
+        except Exception:
+            return None
+
+
+class DebounceManager:
+    """منع الضغط المتكرر على الأزرار الحساسة وتكرار الطلبات."""
+
+    def __init__(self):
+        self._locks = {}
+
+    def allow(self, uid: int, action: str, cooldown: float = 1.8) -> bool:
+        key = (int(uid), str(action))
+        now = time.monotonic()
+        last = self._locks.get(key, 0.0)
+        if now - last < cooldown:
+            return False
+        self._locks[key] = now
+        return True
+
+
+debounce = DebounceManager()
+
+
+class UITheme:
+    """نظام الهوية البصرية الفاخرة والموحدة للبوت."""
+
+    DIVIDER = "━━━━━━━━━━━━━━━━━━━━"
+
+    @staticmethod
+    def header(title: str, icon_key: str = "store_logo", category: str = None) -> str:
+        ic = ce(icon_key, category=category)
+        return f"<blockquote>{ic}<b>{title}</b></blockquote>"
+
+    @staticmethod
+    def success(title: str, body: str) -> str:
+        ic = ce("success", category="success")
+        return f"<blockquote>{ic}<b>[نجاح] {title}</b>\n{UITheme.DIVIDER}\n{body}</blockquote>"
+
+    @staticmethod
+    def error(title: str, body: str) -> str:
+        ic = ce("error", category="failure")
+        return f"<blockquote>{ic}<b>[تنبيه] {title}</b>\n{UITheme.DIVIDER}\n{body}</blockquote>"
+
+    @staticmethod
+    def warning(title: str, body: str) -> str:
+        ic = ce("warning", category="warning")
+        return f"<blockquote>{ic}<b>[تحذير] {title}</b>\n{UITheme.DIVIDER}\n{body}</blockquote>"
+
+    @staticmethod
+    def pending(title: str, body: str) -> str:
+        ic = ce("pending", category="pending")
+        return f"<blockquote>{ic}<b>[قيد المعالجة] {title}</b>\n{UITheme.DIVIDER}\n{body}</blockquote>"
+
 
 LANGS = {
     'ar': {
-        'welcome': """
-<blockquote>⧺︰ <b>أهلاً بك في البوابـة الرقمية الفاخرة لـ Aura eSIM Elite</b></blockquote>
-<blockquote>⧺︰ <b>نقدم لك أحدث حلول الاتصالات والإنترنت الرقمي العالمي بأعلى معايير الجودة</b></blockquote>
-<blockquote>⧺︰ <b>تفعيل فوري، آمن، ومباشر عبر QR Code أو التخطي اليدوي بضغطة زر</b></blockquote>
-<blockquote>⧺︰ <b>سرعات فائقة بلا حدود وبدون سياسة استخدام عادل</b></blockquote>
-<blockquote>⧺︰ <b>فريق دعم فني متواجد ومستعد لخدمتك على مدار الساعة</b></blockquote>
-<blockquote>⧺︰ <b>اختر القسم المناسب لك من القائمة أدناه للبدء بكل سهولة</b></blockquote>
-""",
-        'choose_lang': "<blockquote>⧺︰ <b>يرجى اختيار لغتك المفضلة للمتابعة بسلاسة:</b></blockquote>",
-        'lang_changed': "<blockquote>⧺︰ <b>تم تحويل اللغة بنجاح إلى العربية</b></blockquote>",
-        'btn_personal': "قسم الأفراد (باقات الاستخدام الشخصي)",
-        'btn_dealer': "قسم التجار والموزعين (الجملة بخصم 50%)",
-        'btn_dealer_api': "شراء وتفعيل نظام الـ API ($100)",
+        'welcome_sub': "البوابة الرقمية الفاخرة لخدمات الاتصال والإنترنت العالمي Aura eSIM Elite.",
+        'choose_lang': "<blockquote><b>يرجى اختيار لغتك المفضلة للمتابعة:</b></blockquote>",
+        'lang_changed': "تم تحويل اللغة بنجاح إلى العربية.",
+        'btn_personal': "قسم الأفراد | الباقات الشخصية",
+        'btn_dealer': "قسم التجار | خصم 50%",
+        'btn_dealer_api': "تفعيل نظام الـ API للتجار ($100)",
         'btn_vodafone': "باقات Vodafone (اتصال + إنترنت)",
-        'btn_holafly': "باقات Holafly (إنترنت لا محدود بدون استخدام عادل)",
-        'btn_maya': "باقات Maya (سياسة استخدام عادل 5 جيجا يومياً)",
-        'btn_dealer_vf': "باقات Vodafone تجار (10 شرائح جملة)",
-        'btn_dealer_hf': "باقات Holafly تجار (10 شرائح جملة)",
-        'btn_dealer_maya': "باقات Maya تجار (10 شرائح جملة)",
-        'btn_countries': "الدول المدعومة وشبكات التغطية",
+        'btn_holafly': "باقات Holafly (إنترنت لا محدود)",
+        'btn_maya': "باقات Maya (استخدام عادل 5GB/يوم)",
+        'btn_dealer_vf': "باقات Vodafone تجار (10 شرائح)",
+        'btn_dealer_hf': "باقات Holafly تجار (10 شرائح)",
+        'btn_dealer_maya': "باقات Maya تجار (10 شرائح)",
+        'btn_countries': "الدول المدعومة والتغطية",
+        'btn_search_plans': "بحث عن باقة",
         'btn_cart': "سلة المشتريات",
         'btn_wallet': "محفظتي الشخصية",
-        'btn_transactions': "سجل المعاملات المالية",
+        'btn_transactions': "سجل المعاملات",
         'btn_orders': "طلباتي المكتملة",
-        'btn_support': "الدعم الفني المباشر",
-        'btn_verify_payment': "التحقق من الدفع وإرسال الإيصال",
+        'btn_vip': "حالة VIP والعضوية",
+        'btn_support': "الدعم الفني",
+        'btn_verify_payment': "التحقق من الدفع",
         'btn_admin': "لوحة التحكم الإدارية",
-        'btn_lang': "تغيير  اللغة / Language",
+        'btn_lang': "الإعدادات واللغة / Language",
         'back': "رجوع",
-        'admin_panel_title': "<blockquote>⧺︰ <b>لوحة التحكم الذكية والمطورة لإدارة متجر Aura eSIM</b></blockquote>",
+        'home': "الرئيسية",
+        'admin_panel_title': "لوحة التحكم الإدارية — Aura eSIM Elite",
         'stats_sales': "إجمالي الطلبات المكتملة",
         'stats_wallets': "إجمالي أرصدة المحافظ",
         'stats_esims': "إجمالي المخزون المتاح",
-        'error_msg': "<blockquote>⧺︰ <b>عذراً، حدث خطأ غير متوقع. يرجى المحاولة مرة أخرى.</b></blockquote>",
-        'insufficient_balance': "<blockquote>⧺︰ <b>رصيدك غير كافي لإتمام هذه العملية! يرجى شحن محفظتك أولاً.</b></blockquote>",
-        'success_buy': "<blockquote>⧺︰ <b>تمت عملية الشراء بنجاح! إليك تفاصيل التفعيل الفوري (باركود أو تخطي يدوي):</b></blockquote>",
+        'error_msg': "عذراً، حدث خطأ غير متوقع. يرجى المحاولة مرة أخرى.",
+        'insufficient_balance': "رصيدك غير كافي لإتمام هذه العملية. يرجى شحن محفظتك أولاً.",
+        'success_buy': "تمت عملية الشراء بنجاح. إليك تفاصيل التفعيل الفوري:",
         'buy_now': "شراء الآن",
-        'add_to_cart': "إضافة إلى سلة المشتريات",
-        'confirm_buy': "تأكيد طلب الشراء النهائي",
-        'pay_wallet': "الدفع الفوري من رصيد المحفظة",
-        'pay_binance': "الدفع عبر المنصات وطرق الدفع المتاحة",
-        'type_global': "باقة عالمية (تغطي كافة دول العالم)",
-        'type_country': "باقة مخصصة (اختيار دولة معينة)",
+        'add_to_cart': "إضافة إلى السلة",
+        'confirm_buy': "تأكيد الشراء النهائي",
+        'pay_wallet': "الدفع الفوري من المحفظة",
+        'pay_binance': "الدفع عبر الشبكات والمنصات",
+        'type_global': "باقة عالمية (تغطية شاملة)",
+        'type_country': "تحديد دولة معينة",
         'select_type': "حدد نطاق التغطية المناسب لباقتك:",
         'select_country_prompt': "اختر الدولة المستهدفة أو ابحث عنها بالاسم:",
-        'search_country_btn': "بحث عن دولة محدودة",
-        'search_prompt': "أرسل اسم الدولة التي تبحث عنها:",
-        'wallet_title': "<blockquote>⧺︰ <b>محفظتك الرقمية المتطورة</b></blockquote>",
+        'search_country_btn': "بحث عن دولة",
+        'search_prompt': "أرسل اسم الدولة التي تبحث عنها (بالعربية أو الإنجليزية):",
+        'wallet_title': "محفظتك الرقمية",
         'current_balance': "الرصيد المتاح حالياً",
-        'charge_wallet_btn': "شحن المحفظة (طرق الدفع والشبكات)",
-        'charge_prompt': "<blockquote>⧺︰ <b>شحن المحفظة عبر شبكات العملات الرقمية والمعرفات</b></blockquote>\n\n> ⧺︰ <b>أرسل الآن المبلغ المراد إيداعه بالدولار (الحد الأدنى $20):</b>",
-        'min_charge_err': "<blockquote>⧺︰ <b>⚠️ عذراً، الحد الأدنى لعملية الشحن هو $20</b></blockquote>",
-        'invalid_number_err': "<blockquote>⧺︰ <b>⚠️ يرجى إدخال رقم صحيح وموجب حصرياً.</b></blockquote>",
-        'my_orders_title': "<blockquote>⧺︰ <b>سجل طلباتك المكتملة (اضغط على أي طلب لاستعراض أكواد الباركود أو التخطي اليدوي)</b></blockquote>",
-        'no_orders': "<blockquote>⧺︰ <b>ليس لديك أي طلبات شراء سابقة حتى هذه اللحظة.</b></blockquote>",
-        'dealer_title': "<blockquote>⧺︰ <b>قسم التجار والموزعين (عروض الجملة 10 شرائح وسحب الخدمات عبر API)</b></blockquote>\n\n> ⧺︰ <b>اختر الخيار المناسب أدناه (خصم 50% دائم لمشتركي الـ API):</b>",
-        'verify_prompt': "<blockquote>⧺︰ <b>نظام التحقق الآلي من المدفوعات والإيصالات</b></blockquote>\n\n> ⧺︰ <b>أرسل الآن معرف المعاملة (TxID) أو صورة الإيصال للتحقق السريع:</b>",
-        'verify_sent': "<blockquote>⧺︰ <b>تم استلام إيصالك بنجاح وجاري مراجعته وإضافة الرصيد آلياً فور التحقق!</b></blockquote>",
-        'support_prompt': "<blockquote>⧺︰ <b>نظام تذاكر الدعم الفني المباشر والاحترافي</b></blockquote>\n\n> ⧺︰ <b>اكتب رسالتك أو استفسارك وسيتم تحويله لفريق المختصين فوراً:</b>",
-        'support_sent': "<blockquote>⧺︰ <b>تم إرسال تذكرتك بنجاح تام وسيتم الرد عليك في أقرب وقت ممكن.</b></blockquote>",
-        'network_not_found': "عذراً، طريقة الدفع المختارة غير متوفرة أو تم تحديثها مؤخراً.",
-        'show_all_payments_title': "<blockquote>⧺︰ <b>بوابة الدفع الشاملة لمتجر Aura eSIM</b>\n⧺︰ <b>المبلغ المطلوب تحويله:</b> <code>$$amount</code></blockquote>\n\n> ⧺︰ <b>إليك كافة عناوين ومعرفات الدفع المتاحة للتحويل:</b>",
-        'show_all_payments_footer': "\n> ⧺︰ <b>قم بالتحويل عبر إحدى الطرق أعلاه، ثم اضغط على زر التحقق أدناه لتأكيد طلبك.</b>",
-        'btn_verify_now': "التحقق من الدفع وإرسال الإيصال الآن",
-        'countries_header': "<blockquote>⧺︰ <b>الدول المدعومة في شبكة Aura eSIM (COUNTRIES_COUNT دولة حول العالم):</b></blockquote>\n\n",
+        'charge_wallet_btn': "شحن المحفظة",
+        'charge_prompt': "<blockquote><b>شحن المحفظة</b>\n━━━━━━━━━━━━━━━━━━━━\nأرسل الآن المبلغ المراد إيداعه بالدولار (الحد الأدنى <code>$20</code>):</blockquote>",
+        'min_charge_err': "عذراً، الحد الأدنى لعملية الشحن هو $20.",
+        'invalid_number_err': "يرجى إدخال رقم صحيح وموجب حصرياً.",
+        'my_orders_title': "سجل طلباتك المكتملة",
+        'no_orders': "ليس لديك أي طلبات شراء مكتملة حتى الآن.",
+        'dealer_title': "قسم التجار والموزعين (عروض الجملة ونظام الـ API)",
+        'verify_prompt': "<blockquote><b>نظام التحقق من المدفوعات</b>\n━━━━━━━━━━━━━━━━━━━━\nأرسل الآن معرف المعاملة (TxID) أو صورة الإيصال:</blockquote>",
+        'verify_sent': "تم استلام إيصالك بنجاح، وجاري مراجعته وتفعيل الرصيد فور التحقق.",
+        'support_prompt': "<blockquote><b>نظام تذاكر الدعم الفني المباشر</b>\n━━━━━━━━━━━━━━━━━━━━\nاكتب رسالتك أو استفسارك وسيتم تحويله لفريق المختصين فوراً:</blockquote>",
+        'support_sent': "تم إرسال تذكرتك بنجاح وسيتم الرد عليك في أقرب وقت ممكن.",
+        'network_not_found': "عذراً، طريقة الدفع المختارة غير متوفرة حالياً.",
+        'show_all_payments_title': "<blockquote><b>بوابة الدفع الشاملة — Aura eSIM</b>\nالمبلغ المطلوب تحويله: <code>$$amount</code></blockquote>",
+        'show_all_payments_footer': "<blockquote>قم بالتحويل عبر إحدى الطرق أعلاه، ثم اضغط على زر التحقق لإرسال الإيصال.</blockquote>",
+        'btn_verify_now': "التحقق من الدفع وإرسال الإيصال",
+        'countries_header': "الدول المدعومة في شبكة Aura eSIM (COUNTRIES_COUNT دولة):",
         'prev_page': "السابق",
         'next_page': "التالي"
     },
     'en': {
-        'welcome': """
-<blockquote>⧺︰ <b>Welcome to Aura eSIM Elite Gateway</b></blockquote>
-<blockquote>⧺︰ <b>Providing next-gen global connectivity solutions</b></blockquote>
-<blockquote>⧺︰ <b>Instant & secure QR Code or manual activation</b></blockquote>
-<blockquote>⧺︰ <b>Ultra-fast speeds without throttling</b></blockquote>
-<blockquote>⧺︰ <b>24/7 dedicated professional support</b></blockquote>
-<blockquote>⧺︰ <b>Select a category below to get started</b></blockquote>
-""",
-        'choose_lang': "<blockquote>⧺︰ <b>Please select your preferred language:</b></blockquote>",
-        'lang_changed': "<blockquote>⧺︰ <b>Language successfully changed to English</b></blockquote>",
-        'btn_personal': "Personal Section",
+        'welcome_sub': "Luxury Global Connectivity & Digital eSIM Gateway — Aura eSIM Elite.",
+        'choose_lang': "<blockquote><b>Please select your preferred language:</b></blockquote>",
+        'lang_changed': "Language successfully changed to English.",
+        'btn_personal': "Personal Plans",
         'btn_dealer': "Wholesale & Dealers (50% OFF)",
-        'btn_dealer_api': "Subscribe & Activate API ($100)",
+        'btn_dealer_api': "Activate Dealer API ($100)",
         'btn_vodafone': "Vodafone Plans (Voice + Data)",
-        'btn_holafly': "Holafly Plans (Unlimited Data, No FUP)",
-        'btn_maya': "Maya Plans (Fair Usage Policy 5GB/Day)",
-        'btn_dealer_vf': "Vodafone Dealer Plans (10 eSIMs)",
-        'btn_dealer_hf': "Holafly Dealer Plans (10 eSIMs)",
-        'btn_dealer_maya': "Maya Dealer Plans (10 eSIMs)",
-        'btn_countries': "Supported Countries & Coverage",
+        'btn_holafly': "Holafly Plans (Unlimited Data)",
+        'btn_maya': "Maya Plans (5GB/Day FUP)",
+        'btn_dealer_vf': "Vodafone Dealer (10 eSIMs)",
+        'btn_dealer_hf': "Holafly Dealer (10 eSIMs)",
+        'btn_dealer_maya': "Maya Dealer (10 eSIMs)",
+        'btn_countries': "Supported Countries",
+        'btn_search_plans': "Search Plans",
         'btn_cart': "Shopping Cart",
-        'btn_wallet': "My Personal Wallet",
-        'btn_transactions': "Transactions History",
-        'btn_orders': "My Completed Orders",
-        'btn_support': "Direct Support",
-        'btn_verify_payment': "Verify Payment & Send Receipt",
+        'btn_wallet': "My Wallet",
+        'btn_transactions': "Transactions",
+        'btn_orders': "My Orders",
+        'btn_vip': "VIP & Membership",
+        'btn_support': "Support",
+        'btn_verify_payment': "Verify Payment",
         'btn_admin': "Admin Panel",
-        'btn_lang': "Change Language / اللغة",
+        'btn_lang': "Settings & Language",
         'back': "Back",
-        'admin_panel_title': "<blockquote>⧺︰ <b>Aura eSIM Comprehensive Admin Panel</b></blockquote>",
+        'home': "Home",
+        'admin_panel_title': "Admin Control Panel — Aura eSIM Elite",
         'stats_sales': "Completed Orders",
         'stats_wallets': "Total Wallets Balance",
         'stats_esims': "Total Stock",
-        'error_msg': "<blockquote>⧺︰ <b>An unexpected error occurred. Please try again.</b></blockquote>",
-        'insufficient_balance': "<blockquote>⧺︰ <b>Insufficient balance! Please charge your wallet first to purchase.</b></blockquote>",
-        'success_buy': "<blockquote>⧺︰ <b>Successfully purchased! Here are your activation details (Barcode or Manual):</b></blockquote>",
+        'error_msg': "An unexpected error occurred. Please try again.",
+        'insufficient_balance': "Insufficient balance. Please charge your wallet first.",
+        'success_buy': "Purchase completed successfully. Activation details:",
         'buy_now': "Buy Now",
-        'add_to_cart': "Add to Shopping Cart",
+        'add_to_cart': "Add to Cart",
         'confirm_buy': "Confirm Order",
         'pay_wallet': "Pay from Wallet",
-        'pay_binance': "Pay via Available Payment Methods",
-        'type_global': "Global Plan (Covers All Countries)",
-        'type_country': "Choose a Specific Country",
+        'pay_binance': "Pay via Payment Networks",
+        'type_global': "Global Plan (All Countries)",
+        'type_country': "Specific Country",
         'select_type': "Choose coverage type for your plan:",
-        'select_country_prompt': "Select the desired country or use search:",
+        'select_country_prompt': "Select the desired country or search:",
         'search_country_btn': "Search Country",
-        'search_prompt': "Send the name of the country you want to search for:",
-        'wallet_title': "<blockquote>⧺︰ <b>Your Personal Wallet</b></blockquote>",
+        'search_prompt': "Send the country name to search (Arabic or English):",
+        'wallet_title': "Personal Digital Wallet",
         'current_balance': "Current Balance",
-        'charge_wallet_btn': "Charge Wallet (Available Payment Methods)",
-        'charge_prompt': "<blockquote>⧺︰ <b>Charge Wallet via Crypto Networks & IDs</b></blockquote>\n\n> ⧺︰ <b>Send the amount you want to deposit in USD (Minimum $25):</b>",
-        'min_charge_err': "<blockquote>⧺︰ <b>⚠️ Minimum deposit amount is $20</b></blockquote>",
-        'invalid_number_err': "<blockquote>⧺︰ <b>⚠️ Please send a valid positive number.</b></blockquote>",
-        'my_orders_title': "<blockquote>⧺︰ <b>Your Completed Orders (Click any order to reload activation barcode or manual setup)</b></blockquote>",
-        'no_orders': "<blockquote>⧺︰ <b>You have no previous orders yet.</b></blockquote>",
-        'dealer_title': "<blockquote>⧺︰ <b>Dealers & API Section (50% OFF All Services)</b></blockquote>\n\n> ⧺︰ <b>Choose option below:</b>",
-        'verify_prompt': "<blockquote>⧺︰ <b>Automatic Payment Verification</b></blockquote>\n\n> ⧺︰ <b>Send your transaction ID (TxID) or screenshot for instant verification:</b>",
-        'verify_sent': "<blockquote>⧺︰ <b>Your receipt has been received successfully. Processing and crediting balance!</b></blockquote>",
-        'support_prompt': "<blockquote>⧺︰ <b>Direct Support Ticket System</b></blockquote>\n\n> ⧺︰ <b>Send your message or inquiry now:</b>",
-        'support_sent': "<blockquote>⧺︰ <b>Your support ticket has been sent successfully. We will reply soon!</b></blockquote>",
-        'network_not_found': "Sorry, the selected payment method does not exist or has been updated.",
-        'show_all_payments_title': "<blockquote>⧺︰ <b>Comprehensive Payment Gateway for Aura eSIM</b>\n\n> ⧺︰ <b>Amount to transfer:</b> <code>$$amount</code></blockquote>\n\n> ⧺︰ <b>Here are all available payment methods, IDs, and addresses:</b>",
-        'show_all_payments_footer': "\n> ⧺︰ <b>Transfer via any of the methods above, then click the verify button below to send your receipt or TxID.</b>",
-        'btn_verify_now': "Verify Payment Now & Send Receipt",
-        'countries_header': "<blockquote>⧺︰ <b>Supported Countries in Aura eSIM Store (COUNTRIES_COUNT countries worldwide):</b></blockquote>\n\n",
+        'charge_wallet_btn': "Charge Wallet",
+        'charge_prompt': "<blockquote><b>Charge Wallet</b>\n━━━━━━━━━━━━━━━━━━━━\nSend the deposit amount in USD (Minimum <code>$20</code>):</blockquote>",
+        'min_charge_err': "Minimum deposit amount is $20.",
+        'invalid_number_err': "Please send a valid positive number.",
+        'my_orders_title': "Completed Orders History",
+        'no_orders': "You have no completed orders yet.",
+        'dealer_title': "Dealers & API Section (Wholesale & 50% OFF)",
+        'verify_prompt': "<blockquote><b>Payment Verification</b>\n━━━━━━━━━━━━━━━━━━━━\nSend your transaction ID (TxID) or receipt image:</blockquote>",
+        'verify_sent': "Your receipt has been received and is under review.",
+        'support_prompt': "<blockquote><b>Direct Support Ticket</b>\n━━━━━━━━━━━━━━━━━━━━\nSend your message or inquiry now:</blockquote>",
+        'support_sent': "Your support ticket has been sent. We will reply shortly.",
+        'network_not_found': "Selected payment method is unavailable.",
+        'show_all_payments_title': "<blockquote><b>Payment Gateway — Aura eSIM</b>\nAmount due: <code>$$amount</code></blockquote>",
+        'show_all_payments_footer': "<blockquote>Transfer using any method above, then click Verify to submit your receipt.</blockquote>",
+        'btn_verify_now': "Verify Payment & Send Receipt",
+        'countries_header': "Supported Countries (COUNTRIES_COUNT countries):",
         'prev_page': "Previous",
         'next_page': "Next"
     }
 }
 
 WARRANTY_POLICY_TEXT = {
-    'ar': """
-<blockquote>⧺︰ <b>سياسات ومميزات الشرائح حسب المزود (Aura eSIM Elite):</b>
-⧺︰ <b>شرائح هولافلاي (Holafly) : إنترنت لا محدود بالكامل وبدون أي سياسة استخدام عادل (True Unlimited Data).</b>
-⧺︰ <b>شرائح مايا (Maya) : تخضع لسياسة الاستخدام العادل (5 جيجا يومياً بسرعة فائقة 5G، ثم إنترنت لا محدود بسرعات مخفضة).</b>
-⧺︰ <b>شرائح فودافون (Vodafone) : إنترنت فائق السرعة مع دقائق اتصال محلية ودولية رسمية.</b>
-⧺︰ <b>ملاحظة: باقات Maya وباقات Holafly مخصصة للإنترنت فقط بدون رقم اتصال.</b></blockquote>
+    'ar': """<blockquote><b>سياسات ومميزات الشرائح حسب المزود:</b>
+• <b>Holafly:</b> إنترنت لا محدود بالكامل بدون سياسة استخدام عادل.
+• <b>Maya:</b> تخضع لسياسة الاستخدام العادل (5 جيجا يومياً بسرعة 5G ثم سرعة مخفضة).
+• <b>Vodafone:</b> إنترنت فائق السرعة مع دقائق اتصال محلية ودولية رسمية.
+• <b>ملاحظة:</b> باقات Maya وHolafly للإنترنت فقط بدون رقم اتصال.</blockquote>
 
-<blockquote>⧺︰ <b>باقة الضمان الذهبي والدعم الفني (راحة بالك هي غايتنا):</b>
-⧺︰ <b>ضمان شامل ومستمر : دعم فني متخصص ومتاح لخدمتك على مدار الساعة.</b>
-⧺︰ <b>سياسة تعويض فورية وآمنة : حقوقك محفوظة بتمديد الفترة أو شريحة بديلة فورا.</b>
-⧺︰ <b>ضمان التخزين المرن (3 أشهر) : الاحتفاظ بالشريحة وتفعيلها خلال 3 أشهر.</b></blockquote>
-""",
-    'en': """
-<blockquote>⧺︰ <b>eSIM Policies & Features by Provider:</b>
-⧺︰ <b>Holafly Plans : True unlimited data with ZERO Fair Usage Policy (FUP).</b>
-⧺︰ <b>Maya Plans : Subject to Fair Usage Policy (5 GB daily at ultra-fast speed, then unlimited data).</b>
-⧺︰ <b>Vodafone Plans : Ultra-fast internet with local & international calling minutes.</b>
-⧺︰ <b>Note: Maya and Holafly plans are data-only, no number.</b></blockquote>
+<blockquote><b>الضمان الذهبي (3 أشهر):</b>
+• دعم فني متخصص على مدار الساعة.
+• تعويض فوري وآمن بتمديد الفترة أو شريحة بديلة.
+• مرونة الاحتفاظ بالشريحة وتفعيلها خلال 3 أشهر.</blockquote>""",
+    'en': """<blockquote><b>eSIM Policies & Features:</b>
+• <b>Holafly:</b> True unlimited data with zero Fair Usage Policy (FUP).
+• <b>Maya:</b> 5 GB/day at full 5G speed, then unlimited data at reduced speed.
+• <b>Vodafone:</b> High-speed data + official local & international calling minutes.
+• <b>Note:</b> Maya and Holafly are data-only plans.</blockquote>
 
-<blockquote>⧺︰ <b>Golden Warranty & Support Package:</b>
-⧺︰ <b>Comprehensive Warranty : 24/7 professional technical support team.</b>
-⧺︰ <b>Instant Compensation Policy : Protected with replacement or extension.</b>
-⧺︰ <b>Flexible Storage Warranty (3 Months) : Activate within 3 months.</b></blockquote>
-"""
+<blockquote><b>Golden Warranty (3 Months):</b>
+• 24/7 dedicated technical support.
+• Instant replacement or extension policy.
+• Activate anytime within 3 months of purchase.</blockquote>"""
 }
 
 client = TelegramClient('esim_market', API_ID, API_HASH)
@@ -351,6 +711,7 @@ conn.commit()
 
 cur.execute("INSERT OR IGNORE INTO admins (user_id) VALUES (?)", (DEV_ID,))
 conn.commit()
+emoji_mgr.sync_from_db(conn)
 
 DEFAULT_PLANS = [
     ('vodafone', 'Vodafone Unlimited 1 Month', 'vf_1m', 20.0, 850, 1, 765, 1, 0, 'بيانات لا محدودة + 850 دقيقة اتصال'),
@@ -483,233 +844,207 @@ async def check_low_stock_and_alert(esim_id):
         name, stock = row
         if stock <= 10:
             try:
-                alert_msg = f"⚠️ <b>تنبيه انخفاض مخزون شريحة!</b>\n\n• الباقة: <b>{name}</b>\n• المتبقي حالياً: <code>{stock} قطع</code>\n\nيرجى إعادة تعبئة المخزون مبكراً!"
-                await client.send_message(DEV_ID, alert_msg, parse_mode='html')
+                alert_msg = UITheme.warning("تنبيه انخفاض مخزون شريحة", f"• الباقة: <b>{name}</b>\n• المتبقي حالياً: <code>{stock} قطع</code>\n\nيرجى إعادة تعبئة المخزون مبكراً.")
+                await safe_send(DEV_ID, alert_msg)
             except Exception as e:
                 logger.error(f"Low stock alert error: {e}")
 
-def main_menu(uid):
-    lang = get_user_lang(uid) or 'ar'
-    t = LANGS.get(lang, LANGS['ar'])
-    balance = get_wallet_balance(uid)
-    
-    api_row = cur.execute("SELECT id FROM dealer_api_keys WHERE user_id=?", (uid,)).fetchone()
-    has_api = api_row is not None
-
-    btn = [
-        [Button.inline(t['btn_personal'], b'personal_section')],
-        [Button.inline(t['btn_dealer'], b'dealer_section')],
-    ]
-    if not has_api:
-        btn.append([Button.inline(t['btn_dealer_api'], b'buy_api_sub_menu')])
-        
-    btn.extend([
-        [Button.inline(t['btn_countries'], b'countries_list')], 
-        [Button.inline(t['btn_cart'], b'view_cart'), Button.inline(f"{t['btn_wallet']} : ${balance:.2f}", b'wallet')], 
-        [Button.inline(t['btn_orders'], b'my_orders'), Button.inline(t['btn_support'], b'support_ticket')],
-        [Button.inline(t['btn_lang'], b'change_language')]
-    ])
-    if is_admin(uid):
-        btn.append([Button.inline(t['btn_admin'], b'admin_panel')])
-
-    text = t['welcome']
-    return text, btn
 
 COUNTRIES_DATA = [
-    {"name": "Afghanistan", "flag": "🇦🇫", "operators": "AWCC, Etisalat"},
-    {"name": "Albania", "flag": "🇦🇱", "operators": "Vodafone, Telekom"},
-    {"name": "Algeria", "flag": "🇩🇿", "operators": "Djezzy, Mobilis"},
-    {"name": "Andorra", "flag": "🇦🇩", "operators": "Andorra Telecom, Orange"},
-    {"name": "Angola", "flag": "🇦🇴", "operators": "Unitel, Movicel"},
-    {"name": "Antigua and Barbuda", "flag": "🇦🇬", "operators": "Flow, Digicel"},
-    {"name": "Argentina", "flag": "🇦🇷", "operators": "Claro, Movistar"},
-    {"name": "Armenia", "flag": "🇦🇲", "operators": "VivaCell, Beeline"},
-    {"name": "Australia", "flag": "🇦🇺", "operators": "Telstra, Optus, Vodafone"},
-    {"name": "Austria", "flag": "🇦🇹", "operators": "A1, T-Mobile, Magenta"},
-    {"name": "Azerbaijan", "flag": "🇦🇿", "operators": "Azercell, Bakcell"},
-    {"name": "Bahamas", "flag": "🇧🇸", "operators": "BTC, Aliv"},
-    {"name": "Bahrain", "flag": "🇧🇭", "operators": "Batelco, Zain, STC"},
-    {"name": "Bangladesh", "flag": "🇧🇩", "operators": "Grameenphone, Robi"},
-    {"name": "Barbados", "flag": "🇧🇧", "operators": "Flow, Digicel"},
-    {"name": "Belarus", "flag": "🇧🇾", "operators": "MTS, A1"},
-    {"name": "Belgium", "flag": "🇧🇪", "operators": "Proximus, Orange, Base"},
-    {"name": "Belize", "flag": "🇧🇿", "operators": "BTL, Digi"},
-    {"name": "Benin", "flag": "🇧🇯", "operators": "MTN, Moov"},
-    {"name": "Bhutan", "flag": "🇧🇹", "operators": "B-Mobile, TashiCell"},
-    {"name": "Bolivia", "flag": "🇧🇴", "operators": "Tigo, Entel"},
-    {"name": "Bosnia and Herzegovina", "flag": "🇧🇦", "operators": "BH Telecom, m:tel"},
-    {"name": "Botswana", "flag": "🇧🇼", "operators": "Mascom, Orange"},
-    {"name": "Brazil", "flag": "🇧🇷", "operators": "Vivo, TIM, Claro"},
-    {"name": "Brunei", "flag": "🇧🇳", "operators": "DST, Progresif"},
-    {"name": "Bulgaria", "flag": "🇧🇬", "operators": "A1, Vivacom, Telenor"},
-    {"name": "Burkina Faso", "flag": "🇧🇫", "operators": "Orange, Telmob"},
-    {"name": "Burundi", "flag": "🇧🇮", "operators": "Econet, Lumitel"},
-    {"name": "Cambodia", "flag": "🇰🇭", "operators": "Smart, Cellcard, Metfone"},
-    {"name": "Cameroon", "flag": "🇨🇲", "operators": "MTN, Orange"},
-    {"name": "Canada", "flag": "🇨🇦", "operators": "Rogers, Bell, Telus"},
-    {"name": "Cape Verde", "flag": "🇨🇻", "operators": "CVMovel, Unitel"},
-    {"name": "Central African Republic", "flag": "🇨🇫", "operators": "Orange, Telecel"},
-    {"name": "Chad", "flag": "🇹🇩", "operators": "Airtel, Tigo"},
-    {"name": "Chile", "flag": "🇨🇱", "operators": "Entel, Claro, Movistar"},
-    {"name": "China", "flag": "🇨🇳", "operators": "China Mobile, China Unicom, China Telecom"},
-    {"name": "Colombia", "flag": "🇨🇴", "operators": "Claro, Movistar, Tigo"},
-    {"name": "Comoros", "flag": "🇰🇲", "operators": "Comores Telecom, Telma"},
-    {"name": "Congo", "flag": "🇨🇬", "operators": "MTN, Airtel"},
-    {"name": "Costa Rica", "flag": "🇨🇷", "operators": "Kölbi, Claro, Movistar"},
-    {"name": "Croatia", "flag": "🇭🇷", "operators": "HT, A1, Telemach"},
-    {"name": "Cuba", "flag": "🇨🇺", "operators": "ETECSA"},
-    {"name": "Cyprus", "flag": "🇨🇾", "operators": "Cyta, MTN, Epic"},
-    {"name": "Czech Republic", "flag": "🇨🇿", "operators": "O2, T-Mobile, Vodafone"},
-    {"name": "Denmark", "flag": "🇩🇰", "operators": "TDC, Telia, Telenor"},
-    {"name": "Djibouti", "flag": "🇩🇯", "operators": "Djibouti Telecom"},
-    {"name": "Dominica", "flag": "🇩🇲", "operators": "Flow, Digicel"},
-    {"name": "Dominican Republic", "flag": "🇩🇴", "operators": "Claro, Altice, Viva"},
-    {"name": "Ecuador", "flag": "🇪🇨", "operators": "Claro, Movistar, CNT"},
-    {"name": "Egypt", "flag": "🇪🇬", "operators": "Vodafone, Orange, Etisalat, WE"},
-    {"name": "El Salvador", "flag": "🇸🇻", "operators": "Claro, Tigo, Movistar"},
-    {"name": "Equatorial Guinea", "flag": "🇬🇶", "operators": "Geocom, Orange"},
-    {"name": "Eritrea", "flag": "🇪🇷", "operators": "EriTel"},
-    {"name": "Estonia", "flag": "🇪🇪", "operators": "Telia, Elisa, Tele2"},
-    {"name": "Eswatini", "flag": "🇸🇿", "operators": "Eswatini Mobile, MTN"},
-    {"name": "Ethiopia", "flag": "🇪🇹", "operators": "Ethio Telecom, Safaricom"},
-    {"name": "Fiji", "flag": "🇫🇯", "operators": "Vodafone, Digicel"},
-    {"name": "Finland", "flag": "🇫🇮", "operators": "Elisa, Telia, DNA"},
-    {"name": "France", "flag": "🇫🇷", "operators": "Orange, SFR, Free, Bouygues"},
-    {"name": "Gabon", "flag": "🇬🇦", "operators": "Gabon Telecom, Airtel"},
-    {"name": "Gambia", "flag": "🇬🇲", "operators": "Qcell, Africell"},
-    {"name": "Georgia", "flag": "🇬🇪", "operators": "Magti, Cellfie, Beeline"},
-    {"name": "Germany", "flag": "🇩🇪", "operators": "T-Mobile, Vodafone, O2"},
-    {"name": "Ghana", "flag": "🇬🇭", "operators": "MTN, Vodafone, AirtelTigo"},
-    {"name": "Greece", "flag": "🇬🇷", "operators": "Cosmote, Vodafone, Nova"},
-    {"name": "Grenada", "flag": "🇬🇩", "operators": "Flow, Digicel"},
-    {"name": "Guatemala", "flag": "🇬🇹", "operators": "Claro, Tigo"},
-    {"name": "Guinea", "flag": "🇬🇳", "operators": "Orange, MTN, Cellcom"},
-    {"name": "Guinea-Bissau", "flag": "🇬🇼", "operators": "MTN, Orange"},
-    {"name": "Guyana", "flag": "🇬🇾", "operators": "GTT, Digicel"},
-    {"name": "Haiti", "flag": "🇭🇹", "operators": "Natcom, Digicel"},
-    {"name": "Honduras", "flag": "🇭🇳", "operators": "Tigo, Claro"},
-    {"name": "Hong Kong", "flag": "🇭🇰", "operators": "CSL, 3, SmarTone"},
-    {"name": "Hungary", "flag": "🇭🇺", "operators": "Magyar Telekom, Telenor, Vodafone"},
-    {"name": "Iceland", "flag": "🇮🇸", "operators": "Síminn, Vodafone, Nova"},
-    {"name": "India", "flag": "🇮🇳", "operators": "Jio, Airtel, Vi"},
-    {"name": "Indonesia", "flag": "🇮🇩", "operators": "Telkomsel, Indosat, XL Axiata"},
-    {"name": "Iran", "flag": "🇮🇷", "operators": "MCI, Irancell, Rightel"},
-    {"name": "Iraq", "flag": "🇮🇶", "operators": "Zain, Asiacell, Korek"},
-    {"name": "Ireland", "flag": "🇮🇪", "operators": "Vodafone, Three, Eir"},
-    {"name": "Israel", "flag": "🇮🇱", "operators": "Cellcom, Pelephone, Partner"},
-    {"name": "Italy", "flag": "🇮🇹", "operators": "TIM, Vodafone, WindTre, Iliad"},
-    {"name": "Jamaica", "flag": "🇯🇲", "operators": "Digicel, Flow"},
-    {"name": "Japan", "flag": "🇯🇵", "operators": "NTT Docomo, KDDI, SoftBank, Rakuten"},
-    {"name": "Jordan", "flag": "🇯🇴", "operators": "Orange, Zain, Umniah"},
-    {"name": "Kazakhstan", "flag": "🇰🇿", "operators": "Kcell, Beeline, Tele2"},
-    {"name": "Kenya", "flag": "🇰🇪", "operators": "Safaricom, Airtel, Telkom"},
-    {"name": "Kiribati", "flag": "🇰🇮", "operators": "Telecom Kiribati"},
-    {"name": "Kuwait", "flag": "🇰🇼", "operators": "Zain, Ooredoo, STC"},
-    {"name": "Kyrgyzstan", "flag": "🇰🇬", "operators": "Beeline, MegaCom, O!"},
-    {"name": "Laos", "flag": "🇱🇦", "operators": "Lao Telecom, Unitel, ETL"},
-    {"name": "Latvia", "flag": "🇱🇻", "operators": "LMT, Tele2, Bite"},
-    {"name": "Lebanon", "flag": "🇱🇧", "operators": "Alfa, Touch"},
-    {"name": "Lesotho", "flag": "🇱🇸", "operators": "Vodacom, Econet"},
-    {"name": "Liberia", "flag": "🇱🇷", "operators": "Orange, MTN"},
-    {"name": "Libya", "flag": "🇱🇾", "operators": "LTT, Almadar, Libyana"},
-    {"name": "Liechtenstein", "flag": "🇱🇮", "operators": "Telecom Liechtenstein, Salt"},
-    {"name": "Lithuania", "flag": "🇱🇹", "operators": "Telia, Tele2, Bite"},
-    {"name": "Luxembourg", "flag": "🇱🇺", "operators": "POST, Orange, Tango"},
-    {"name": "Madagascar", "flag": "🇲🇬", "operators": "Orange, Telma, Airtel"},
-    {"name": "Malawi", "flag": "🇲🇼", "operators": "Airtel, TNM"},
-    {"name": "Malaysia", "flag": "🇲🇾", "operators": "Maxis, Celcom, Digi, U Mobile"},
-    {"name": "Maldives", "flag": "🇲🇻", "operators": "Dhiraagu, Ooredoo"},
-    {"name": "Mali", "flag": "🇲🇱", "operators": "Orange, Malitel"},
-    {"name": "Malta", "flag": "🇲🇹", "operators": "GO, Melita, Epic"},
-    {"name": "Marshall Islands", "flag": "🇲🇭", "operators": "NTA"},
-    {"name": "Mauritania", "flag": "🇲🇷", "operators": "Mauritel, Chinguitel, Mattel"},
-    {"name": "Mauritius", "flag": "🇲🇺", "operators": "My.T, Emtel, Chili"},
-    {"name": "Mexico", "flag": "🇲🇽", "operators": "Telcel, AT&T, Movistar"},
-    {"name": "Micronesia", "flag": "🇫🇲", "operators": "FSM Telecom"},
-    {"name": "Moldova", "flag": "🇲🇩", "operators": "Orange, Moldcell, Unite"},
-    {"name": "Monaco", "flag": "🇲🇨", "operators": "Monaco Telecom"},
-    {"name": "Mongolia", "flag": "🇲🇳", "operators": "Mobicom, Unitel, Skytel"},
-    {"name": "Montenegro", "flag": "🇲🇪", "operators": "Telekom, Telenor, M-tel"},
-    {"name": "Morocco", "flag": "🇲🇦", "operators": "Maroc Telecom, Orange, Inwi"},
-    {"name": "Mozambique", "flag": "🇲🇿", "operators": "Vodacom, Movitel"},
-    {"name": "Myanmar", "flag": "🇲🇲", "operators": "MPT, Ooredoo, Telenor/Atom, Mytel"},
-    {"name": "Namibia", "flag": "🇳🇦", "operators": "MTC, Telecom Namibia"},
-    {"name": "Nauru", "flag": "🇳🇷", "operators": "Digicel"},
-    {"name": "Nepal", "flag": "🇳🇵", "operators": "Nepal Telecom, Ncell"},
-    {"name": "Netherlands", "flag": "🇳🇱", "operators": "KPN, Vodafone, T-Mobile"},
-    {"name": "New Zealand", "flag": "🇳🇿", "operators": "Spark, Vodafone, 2degrees"},
-    {"name": "Nicaragua", "flag": "🇳🇮", "operators": "Claro, Tigo"},
-    {"name": "Niger", "flag": "🇳🇪", "operators": "Airtel, Moov"},
-    {"name": "Nigeria", "flag": "🇳🇬", "operators": "MTN, Airtel, Glo, 9mobile"},
-    {"name": "North Korea", "flag": "🇰🇵", "operators": "Koryolink"},
-    {"name": "North Macedonia", "flag": "🇲🇰", "operators": "Telekom, A1"},
-    {"name": "Norway", "flag": "🇳🇴", "operators": "Telenor, Telia, Ice"},
-    {"name": "Oman", "flag": "🇴🇲", "operators": "Omantel, Ooredoo, Vodafone"},
-    {"name": "Pakistan", "flag": "🇵🇰", "operators": "Jazz, Zong, Telenor, Ufone"},
-    {"name": "Palau", "flag": "🇵🇼", "operators": "PNCC"},
-    {"name": "Palestine", "flag": "🇵🇸", "operators": "Jawwal, Ooredoo"},
-    {"name": "Panama", "flag": "🇵🇦", "operators": "Cable & Wireless, Tigo, Claro"},
-    {"name": "Papua New Guinea", "flag": "🇵🇬", "operators": "Digicel, bmobile"},
-    {"name": "Paraguay", "flag": "🇵🇾", "operators": "Tigo, Claro, Personal"},
-    {"name": "Peru", "flag": "🇵🇪", "operators": "Claro, Movistar, Entel, Bitel"},
-    {"name": "Philippines", "flag": "🇵🇭", "operators": "Globe, Smart, Dito"},
-    {"name": "Poland", "flag": "🇵🇱", "operators": "Orange, Play, T-Mobile, Plus"},
-    {"name": "Portugal", "flag": "🇵🇹", "operators": "MEO, NOS, Vodafone"},
-    {"name": "Qatar", "flag": "🇶🇦", "operators": "Ooredoo, Vodafone"},
-    {"name": "Romania", "flag": "🇷🇴", "operators": "Orange, Vodafone, Digi, Telekom"},
-    {"name": "Russia", "flag": "🇷🇺", "operators": "MTS, Beeline, Megafon, Tele2"},
-    {"name": "Rwanda", "flag": "🇷🇼", "operators": "MTN, Airtel"},
-    {"name": "Saint Kitts and Nevis", "flag": "🇰🇳", "operators": "Flow, Digicel"},
-    {"name": "Saint Lucia", "flag": "🇱🇨", "operators": "Flow, Digicel"},
-    {"name": "Samoa", "flag": "🇼🇸", "operators": "Vodafone, Digicel"},
-    {"name": "San Marino", "flag": "🇸🇲", "operators": "TIM, San Marino Telecom"},
-    {"name": "Sao Tome and Principe", "flag": "🇸🇹", "operators": "CSTmóvel"},
-    {"name": "Saudi Arabia", "flag": "🇸🇦", "operators": "STC, Mobily, Zain"},
-    {"name": "Senegal", "flag": "🇸🇳", "operators": "Orange, Free, Expresso"},
-    {"name": "Serbia", "flag": "🇷🇸", "operators": "Telekom Srbija, Yettel, A1"},
-    {"name": "Seychelles", "flag": "🇸🇨", "operators": "Airtel, Cable & Wireless"},
-    {"name": "Sierra Leone", "flag": "🇸🇱", "operators": "Orange, Africell"},
-    {"name": "Singapore", "flag": "🇸🇬", "operators": "Singtel, StarHub, M1, SIMBA"},
-    {"name": "Slovakia", "flag": "🇸🇰", "operators": "Orange, Telekom, O2, 4ka"},
-    {"name": "Slovenia", "flag": "🇸🇮", "operators": "Telekom Slovenije, A1, Telemach"},
-    {"name": "Solomon Islands", "flag": "🇸🇧", "operators": "Our Telekom, Bintang"},
-    {"name": "Somalia", "flag": "🇸🇴", "operators": "Hormuud, Somtel"},
-    {"name": "South Africa", "flag": "🇿🇦", "operators": "Vodacom, MTN, Cell C, Telkom"},
-    {"name": "South Korea", "flag": "🇰🇷", "operators": "SK Telecom, KT, LG Uplus"},
-    {"name": "South Sudan", "flag": "🇸🇸", "operators": "MTN, Zain"},
-    {"name": "Spain", "flag": "🇪🇸", "operators": "Movistar, Vodafone, Orange, Yoigo"},
-    {"name": "Sri Lanka", "flag": "🇱🇰", "operators": "Dialog, Mobitel, Hutch"},
-    {"name": "Sudan", "flag": "🇸🇩", "operators": "Zain, MTN, Sudani"},
-    {"name": "Suriname", "flag": "🇸🇷", "operators": "Telesur, Digicel"},
-    {"name": "Sweden", "flag": "🇸🇪", "operators": "Telia, Telenor, Tele2, Tre"},
-    {"name": "Switzerland", "flag": "🇨🇭", "operators": "Swisscom, Sunrise, Salt"},
-    {"name": "Syria", "flag": "🇸🇾", "operators": "Syriatel, MTN"},
-    {"name": "Taiwan", "flag": "🇹🇼", "operators": "Chunghwa Telecom, Taiwan Mobile, FarEasTone"},
-    {"name": "Tajikistan", "flag": "🇹🇯", "operators": "Tcell, Beeline, Megafon"},
-    {"name": "Tanzania", "flag": "🇹🇿", "operators": "Vodacom, Airtel, Tigo, Halotel"},
-    {"name": "Thailand", "flag": "🇹🇭", "operators": "AIS, True Move H, DTAC"},
-    {"name": "Timor-Leste", "flag": "🇹🇱", "operators": "Telemor, Timor Telecom, Telkomcel"},
-    {"name": "Togo", "flag": "🇹🇬", "operators": "Togocel, Moov"},
-    {"name": "Tonga", "flag": "🇹🇴", "operators": "Digicel, Tones"},
-    {"name": "Trinidad and Tobago", "flag": "🇹🇹", "operators": "TSTT, Digicel"},
-    {"name": "Tunisia", "flag": "🇹🇳", "operators": "Ooredoo, Orange, Tunisie Telecom"},
-    {"name": "Turkey", "flag": "🇹🇷", "operators": "Turkcell, Vodafone, Türk Telekom"},
-    {"name": "Turkmenistan", "flag": "🇹🇲", "operators": "TM Cell"},
-    {"name": "Tuvalu", "flag": "🇹🇻", "operators": "Tuvalu Telecom"},
-    {"name": "Uganda", "flag": "🇺🇬", "operators": "MTN, Airtel"},
-    {"name": "Ukraine", "flag": "🇺🇦", "operators": "Kyivstar, Vodafone, lifecell"},
-    {"name": "United Arab Emirates", "flag": "🇦🇪", "operators": "Etisalat (e&), du, Virgin Mobile"},
-    {"name": "United Kingdom", "flag": "🇬🇧", "operators": "EE, Vodafone, O2, Three"},
-    {"name": "United States", "flag": "🇺🇸", "operators": "Verizon, AT&T, T-Mobile"},
-    {"name": "Uruguay", "flag": "🇺🇾", "operators": "Antel, Movistar, Claro"},
-    {"name": "Uzbekistan", "flag": "🇺🇿", "operators": "Ucell, Beeline, Uzmobile, UMS"},
-    {"name": "Vanuatu", "flag": "🇻🇺", "operators": "Digicel, Vodafone"},
-    {"name": "Vatican City", "flag": "🇻🇦", "operators": "Vatican Telecom"},
-    {"name": "Venezuela", "flag": "🇻🇪", "operators": "Movistar, Digicel, Movilnet"},
-    {"name": "Vietnam", "flag": "🇻🇳", "operators": "Viettel, Vinaphone, Mobifone"},
-    {"name": "Yemen", "flag": "🇾🇪", "operators": "You, Sabafon, Yemen Mobile"},
-    {"name": "Zambia", "flag": "🇿🇲", "operators": "Airtel, MTN, Zamtel"},
-    {"name": "Zimbabwe", "flag": "🇿🇼", "operators": "Econet, NetOne, Telecel"}
+    {"name": "Afghanistan", "flag": "[AF]", "operators": "AWCC, Etisalat"},
+    {"name": "Albania", "flag": "[AL]", "operators": "Vodafone, Telekom"},
+    {"name": "Algeria", "flag": "[DZ]", "operators": "Djezzy, Mobilis"},
+    {"name": "Andorra", "flag": "[AD]", "operators": "Andorra Telecom, Orange"},
+    {"name": "Angola", "flag": "[AO]", "operators": "Unitel, Movicel"},
+    {"name": "Antigua and Barbuda", "flag": "[AG]", "operators": "Flow, Digicel"},
+    {"name": "Argentina", "flag": "[AR]", "operators": "Claro, Movistar"},
+    {"name": "Armenia", "flag": "[AM]", "operators": "VivaCell, Beeline"},
+    {"name": "Australia", "flag": "[AU]", "operators": "Telstra, Optus, Vodafone"},
+    {"name": "Austria", "flag": "[AT]", "operators": "A1, T-Mobile, Magenta"},
+    {"name": "Azerbaijan", "flag": "[AZ]", "operators": "Azercell, Bakcell"},
+    {"name": "Bahamas", "flag": "[BS]", "operators": "BTC, Aliv"},
+    {"name": "Bahrain", "flag": "[BH]", "operators": "Batelco, Zain, STC"},
+    {"name": "Bangladesh", "flag": "[BD]", "operators": "Grameenphone, Robi"},
+    {"name": "Barbados", "flag": "[BB]", "operators": "Flow, Digicel"},
+    {"name": "Belarus", "flag": "[BY]", "operators": "MTS, A1"},
+    {"name": "Belgium", "flag": "[BE]", "operators": "Proximus, Orange, Base"},
+    {"name": "Belize", "flag": "[BZ]", "operators": "BTL, Digi"},
+    {"name": "Benin", "flag": "[BJ]", "operators": "MTN, Moov"},
+    {"name": "Bhutan", "flag": "[BT]", "operators": "B-Mobile, TashiCell"},
+    {"name": "Bolivia", "flag": "[BO]", "operators": "Tigo, Entel"},
+    {"name": "Bosnia and Herzegovina", "flag": "[BA]", "operators": "BH Telecom, m:tel"},
+    {"name": "Botswana", "flag": "[BW]", "operators": "Mascom, Orange"},
+    {"name": "Brazil", "flag": "[BR]", "operators": "Vivo, TIM, Claro"},
+    {"name": "Brunei", "flag": "[BN]", "operators": "DST, Progresif"},
+    {"name": "Bulgaria", "flag": "[BG]", "operators": "A1, Vivacom, Telenor"},
+    {"name": "Burkina Faso", "flag": "[BF]", "operators": "Orange, Telmob"},
+    {"name": "Burundi", "flag": "[BI]", "operators": "Econet, Lumitel"},
+    {"name": "Cambodia", "flag": "[KH]", "operators": "Smart, Cellcard, Metfone"},
+    {"name": "Cameroon", "flag": "[CM]", "operators": "MTN, Orange"},
+    {"name": "Canada", "flag": "[CA]", "operators": "Rogers, Bell, Telus"},
+    {"name": "Cape Verde", "flag": "[CV]", "operators": "CVMovel, Unitel"},
+    {"name": "Central African Republic", "flag": "[CF]", "operators": "Orange, Telecel"},
+    {"name": "Chad", "flag": "[TD]", "operators": "Airtel, Tigo"},
+    {"name": "Chile", "flag": "[CL]", "operators": "Entel, Claro, Movistar"},
+    {"name": "China", "flag": "[CN]", "operators": "China Mobile, China Unicom, China Telecom"},
+    {"name": "Colombia", "flag": "[CO]", "operators": "Claro, Movistar, Tigo"},
+    {"name": "Comoros", "flag": "[KM]", "operators": "Comores Telecom, Telma"},
+    {"name": "Congo", "flag": "[CG]", "operators": "MTN, Airtel"},
+    {"name": "Costa Rica", "flag": "[CR]", "operators": "Kölbi, Claro, Movistar"},
+    {"name": "Croatia", "flag": "[HR]", "operators": "HT, A1, Telemach"},
+    {"name": "Cuba", "flag": "[CU]", "operators": "ETECSA"},
+    {"name": "Cyprus", "flag": "[CY]", "operators": "Cyta, MTN, Epic"},
+    {"name": "Czech Republic", "flag": "[CZ]", "operators": "O2, T-Mobile, Vodafone"},
+    {"name": "Denmark", "flag": "[DK]", "operators": "TDC, Telia, Telenor"},
+    {"name": "Djibouti", "flag": "[DJ]", "operators": "Djibouti Telecom"},
+    {"name": "Dominica", "flag": "[DM]", "operators": "Flow, Digicel"},
+    {"name": "Dominican Republic", "flag": "[DO]", "operators": "Claro, Altice, Viva"},
+    {"name": "Ecuador", "flag": "[EC]", "operators": "Claro, Movistar, CNT"},
+    {"name": "Egypt", "flag": "[EG]", "operators": "Vodafone, Orange, Etisalat, WE"},
+    {"name": "El Salvador", "flag": "[SV]", "operators": "Claro, Tigo, Movistar"},
+    {"name": "Equatorial Guinea", "flag": "[GQ]", "operators": "Geocom, Orange"},
+    {"name": "Eritrea", "flag": "[ER]", "operators": "EriTel"},
+    {"name": "Estonia", "flag": "[EE]", "operators": "Telia, Elisa, Tele2"},
+    {"name": "Eswatini", "flag": "[SZ]", "operators": "Eswatini Mobile, MTN"},
+    {"name": "Ethiopia", "flag": "[ET]", "operators": "Ethio Telecom, Safaricom"},
+    {"name": "Fiji", "flag": "[FJ]", "operators": "Vodafone, Digicel"},
+    {"name": "Finland", "flag": "[FI]", "operators": "Elisa, Telia, DNA"},
+    {"name": "France", "flag": "[FR]", "operators": "Orange, SFR, Free, Bouygues"},
+    {"name": "Gabon", "flag": "[GA]", "operators": "Gabon Telecom, Airtel"},
+    {"name": "Gambia", "flag": "[GM]", "operators": "Qcell, Africell"},
+    {"name": "Georgia", "flag": "[GE]", "operators": "Magti, Cellfie, Beeline"},
+    {"name": "Germany", "flag": "[DE]", "operators": "T-Mobile, Vodafone, O2"},
+    {"name": "Ghana", "flag": "[GH]", "operators": "MTN, Vodafone, AirtelTigo"},
+    {"name": "Greece", "flag": "[GR]", "operators": "Cosmote, Vodafone, Nova"},
+    {"name": "Grenada", "flag": "[GD]", "operators": "Flow, Digicel"},
+    {"name": "Guatemala", "flag": "[GT]", "operators": "Claro, Tigo"},
+    {"name": "Guinea", "flag": "[GN]", "operators": "Orange, MTN, Cellcom"},
+    {"name": "Guinea-Bissau", "flag": "[GW]", "operators": "MTN, Orange"},
+    {"name": "Guyana", "flag": "[GY]", "operators": "GTT, Digicel"},
+    {"name": "Haiti", "flag": "[HT]", "operators": "Natcom, Digicel"},
+    {"name": "Honduras", "flag": "[HN]", "operators": "Tigo, Claro"},
+    {"name": "Hong Kong", "flag": "[HK]", "operators": "CSL, 3, SmarTone"},
+    {"name": "Hungary", "flag": "[HU]", "operators": "Magyar Telekom, Telenor, Vodafone"},
+    {"name": "Iceland", "flag": "[IS]", "operators": "Síminn, Vodafone, Nova"},
+    {"name": "India", "flag": "[IN]", "operators": "Jio, Airtel, Vi"},
+    {"name": "Indonesia", "flag": "[ID]", "operators": "Telkomsel, Indosat, XL Axiata"},
+    {"name": "Iran", "flag": "[IR]", "operators": "MCI, Irancell, Rightel"},
+    {"name": "Iraq", "flag": "[IQ]", "operators": "Zain, Asiacell, Korek"},
+    {"name": "Ireland", "flag": "[IE]", "operators": "Vodafone, Three, Eir"},
+    {"name": "Israel", "flag": "[IL]", "operators": "Cellcom, Pelephone, Partner"},
+    {"name": "Italy", "flag": "[IT]", "operators": "TIM, Vodafone, WindTre, Iliad"},
+    {"name": "Jamaica", "flag": "[JM]", "operators": "Digicel, Flow"},
+    {"name": "Japan", "flag": "[JP]", "operators": "NTT Docomo, KDDI, SoftBank, Rakuten"},
+    {"name": "Jordan", "flag": "[JO]", "operators": "Orange, Zain, Umniah"},
+    {"name": "Kazakhstan", "flag": "[KZ]", "operators": "Kcell, Beeline, Tele2"},
+    {"name": "Kenya", "flag": "[KE]", "operators": "Safaricom, Airtel, Telkom"},
+    {"name": "Kiribati", "flag": "[KI]", "operators": "Telecom Kiribati"},
+    {"name": "Kuwait", "flag": "[KW]", "operators": "Zain, Ooredoo, STC"},
+    {"name": "Kyrgyzstan", "flag": "[KG]", "operators": "Beeline, MegaCom, O!"},
+    {"name": "Laos", "flag": "[LA]", "operators": "Lao Telecom, Unitel, ETL"},
+    {"name": "Latvia", "flag": "[LV]", "operators": "LMT, Tele2, Bite"},
+    {"name": "Lebanon", "flag": "[LB]", "operators": "Alfa, Touch"},
+    {"name": "Lesotho", "flag": "[LS]", "operators": "Vodacom, Econet"},
+    {"name": "Liberia", "flag": "[LR]", "operators": "Orange, MTN"},
+    {"name": "Libya", "flag": "[LY]", "operators": "LTT, Almadar, Libyana"},
+    {"name": "Liechtenstein", "flag": "[LI]", "operators": "Telecom Liechtenstein, Salt"},
+    {"name": "Lithuania", "flag": "[LT]", "operators": "Telia, Tele2, Bite"},
+    {"name": "Luxembourg", "flag": "[LU]", "operators": "POST, Orange, Tango"},
+    {"name": "Madagascar", "flag": "[MG]", "operators": "Orange, Telma, Airtel"},
+    {"name": "Malawi", "flag": "[MW]", "operators": "Airtel, TNM"},
+    {"name": "Malaysia", "flag": "[MY]", "operators": "Maxis, Celcom, Digi, U Mobile"},
+    {"name": "Maldives", "flag": "[MV]", "operators": "Dhiraagu, Ooredoo"},
+    {"name": "Mali", "flag": "[ML]", "operators": "Orange, Malitel"},
+    {"name": "Malta", "flag": "[MT]", "operators": "GO, Melita, Epic"},
+    {"name": "Marshall Islands", "flag": "[MH]", "operators": "NTA"},
+    {"name": "Mauritania", "flag": "[MR]", "operators": "Mauritel, Chinguitel, Mattel"},
+    {"name": "Mauritius", "flag": "[MU]", "operators": "My.T, Emtel, Chili"},
+    {"name": "Mexico", "flag": "[MX]", "operators": "Telcel, AT&T, Movistar"},
+    {"name": "Micronesia", "flag": "[FM]", "operators": "FSM Telecom"},
+    {"name": "Moldova", "flag": "[MD]", "operators": "Orange, Moldcell, Unite"},
+    {"name": "Monaco", "flag": "[MC]", "operators": "Monaco Telecom"},
+    {"name": "Mongolia", "flag": "[MN]", "operators": "Mobicom, Unitel, Skytel"},
+    {"name": "Montenegro", "flag": "[ME]", "operators": "Telekom, Telenor, M-tel"},
+    {"name": "Morocco", "flag": "[MA]", "operators": "Maroc Telecom, Orange, Inwi"},
+    {"name": "Mozambique", "flag": "[MZ]", "operators": "Vodacom, Movitel"},
+    {"name": "Myanmar", "flag": "[MM]", "operators": "MPT, Ooredoo, Telenor/Atom, Mytel"},
+    {"name": "Namibia", "flag": "[NA]", "operators": "MTC, Telecom Namibia"},
+    {"name": "Nauru", "flag": "[NR]", "operators": "Digicel"},
+    {"name": "Nepal", "flag": "[NP]", "operators": "Nepal Telecom, Ncell"},
+    {"name": "Netherlands", "flag": "[NL]", "operators": "KPN, Vodafone, T-Mobile"},
+    {"name": "New Zealand", "flag": "[NZ]", "operators": "Spark, Vodafone, 2degrees"},
+    {"name": "Nicaragua", "flag": "[NI]", "operators": "Claro, Tigo"},
+    {"name": "Niger", "flag": "[NE]", "operators": "Airtel, Moov"},
+    {"name": "Nigeria", "flag": "[NG]", "operators": "MTN, Airtel, Glo, 9mobile"},
+    {"name": "North Korea", "flag": "[KP]", "operators": "Koryolink"},
+    {"name": "North Macedonia", "flag": "[MK]", "operators": "Telekom, A1"},
+    {"name": "Norway", "flag": "[NO]", "operators": "Telenor, Telia, Ice"},
+    {"name": "Oman", "flag": "[OM]", "operators": "Omantel, Ooredoo, Vodafone"},
+    {"name": "Pakistan", "flag": "[PK]", "operators": "Jazz, Zong, Telenor, Ufone"},
+    {"name": "Palau", "flag": "[PW]", "operators": "PNCC"},
+    {"name": "Palestine", "flag": "[PS]", "operators": "Jawwal, Ooredoo"},
+    {"name": "Panama", "flag": "[PA]", "operators": "Cable & Wireless, Tigo, Claro"},
+    {"name": "Papua New Guinea", "flag": "[PG]", "operators": "Digicel, bmobile"},
+    {"name": "Paraguay", "flag": "[PY]", "operators": "Tigo, Claro, Personal"},
+    {"name": "Peru", "flag": "[PE]", "operators": "Claro, Movistar, Entel, Bitel"},
+    {"name": "Philippines", "flag": "[PH]", "operators": "Globe, Smart, Dito"},
+    {"name": "Poland", "flag": "[PL]", "operators": "Orange, Play, T-Mobile, Plus"},
+    {"name": "Portugal", "flag": "[PT]", "operators": "MEO, NOS, Vodafone"},
+    {"name": "Qatar", "flag": "[QA]", "operators": "Ooredoo, Vodafone"},
+    {"name": "Romania", "flag": "[RO]", "operators": "Orange, Vodafone, Digi, Telekom"},
+    {"name": "Russia", "flag": "[RU]", "operators": "MTS, Beeline, Megafon, Tele2"},
+    {"name": "Rwanda", "flag": "[RW]", "operators": "MTN, Airtel"},
+    {"name": "Saint Kitts and Nevis", "flag": "[KN]", "operators": "Flow, Digicel"},
+    {"name": "Saint Lucia", "flag": "[LC]", "operators": "Flow, Digicel"},
+    {"name": "Samoa", "flag": "[WS]", "operators": "Vodafone, Digicel"},
+    {"name": "San Marino", "flag": "[SM]", "operators": "TIM, San Marino Telecom"},
+    {"name": "Sao Tome and Principe", "flag": "[ST]", "operators": "CSTmóvel"},
+    {"name": "Saudi Arabia", "flag": "[SA]", "operators": "STC, Mobily, Zain"},
+    {"name": "Senegal", "flag": "[SN]", "operators": "Orange, Free, Expresso"},
+    {"name": "Serbia", "flag": "[RS]", "operators": "Telekom Srbija, Yettel, A1"},
+    {"name": "Seychelles", "flag": "[SC]", "operators": "Airtel, Cable & Wireless"},
+    {"name": "Sierra Leone", "flag": "[SL]", "operators": "Orange, Africell"},
+    {"name": "Singapore", "flag": "[SG]", "operators": "Singtel, StarHub, M1, SIMBA"},
+    {"name": "Slovakia", "flag": "[SK]", "operators": "Orange, Telekom, O2, 4ka"},
+    {"name": "Slovenia", "flag": "[SI]", "operators": "Telekom Slovenije, A1, Telemach"},
+    {"name": "Solomon Islands", "flag": "[SB]", "operators": "Our Telekom, Bintang"},
+    {"name": "Somalia", "flag": "[SO]", "operators": "Hormuud, Somtel"},
+    {"name": "South Africa", "flag": "[ZA]", "operators": "Vodacom, MTN, Cell C, Telkom"},
+    {"name": "South Korea", "flag": "[KR]", "operators": "SK Telecom, KT, LG Uplus"},
+    {"name": "South Sudan", "flag": "[SS]", "operators": "MTN, Zain"},
+    {"name": "Spain", "flag": "[ES]", "operators": "Movistar, Vodafone, Orange, Yoigo"},
+    {"name": "Sri Lanka", "flag": "[LK]", "operators": "Dialog, Mobitel, Hutch"},
+    {"name": "Sudan", "flag": "[SD]", "operators": "Zain, MTN, Sudani"},
+    {"name": "Suriname", "flag": "[SR]", "operators": "Telesur, Digicel"},
+    {"name": "Sweden", "flag": "[SE]", "operators": "Telia, Telenor, Tele2, Tre"},
+    {"name": "Switzerland", "flag": "[CH]", "operators": "Swisscom, Sunrise, Salt"},
+    {"name": "Syria", "flag": "[SY]", "operators": "Syriatel, MTN"},
+    {"name": "Taiwan", "flag": "[TW]", "operators": "Chunghwa Telecom, Taiwan Mobile, FarEasTone"},
+    {"name": "Tajikistan", "flag": "[TJ]", "operators": "Tcell, Beeline, Megafon"},
+    {"name": "Tanzania", "flag": "[TZ]", "operators": "Vodacom, Airtel, Tigo, Halotel"},
+    {"name": "Thailand", "flag": "[TH]", "operators": "AIS, True Move H, DTAC"},
+    {"name": "Timor-Leste", "flag": "[TL]", "operators": "Telemor, Timor Telecom, Telkomcel"},
+    {"name": "Togo", "flag": "[TG]", "operators": "Togocel, Moov"},
+    {"name": "Tonga", "flag": "[TO]", "operators": "Digicel, Tones"},
+    {"name": "Trinidad and Tobago", "flag": "[TT]", "operators": "TSTT, Digicel"},
+    {"name": "Tunisia", "flag": "[TN]", "operators": "Ooredoo, Orange, Tunisie Telecom"},
+    {"name": "Turkey", "flag": "[TR]", "operators": "Turkcell, Vodafone, Türk Telekom"},
+    {"name": "Turkmenistan", "flag": "[TM]", "operators": "TM Cell"},
+    {"name": "Tuvalu", "flag": "[TV]", "operators": "Tuvalu Telecom"},
+    {"name": "Uganda", "flag": "[UG]", "operators": "MTN, Airtel"},
+    {"name": "Ukraine", "flag": "[UA]", "operators": "Kyivstar, Vodafone, lifecell"},
+    {"name": "United Arab Emirates", "flag": "[AE]", "operators": "Etisalat (e&), du, Virgin Mobile"},
+    {"name": "United Kingdom", "flag": "[GB]", "operators": "EE, Vodafone, O2, Three"},
+    {"name": "United States", "flag": "[US]", "operators": "Verizon, AT&T, T-Mobile"},
+    {"name": "Uruguay", "flag": "[UY]", "operators": "Antel, Movistar, Claro"},
+    {"name": "Uzbekistan", "flag": "[UZ]", "operators": "Ucell, Beeline, Uzmobile, UMS"},
+    {"name": "Vanuatu", "flag": "[VU]", "operators": "Digicel, Vodafone"},
+    {"name": "Vatican City", "flag": "[VA]", "operators": "Vatican Telecom"},
+    {"name": "Venezuela", "flag": "[VE]", "operators": "Movistar, Digicel, Movilnet"},
+    {"name": "Vietnam", "flag": "[VN]", "operators": "Viettel, Vinaphone, Mobifone"},
+    {"name": "Yemen", "flag": "[YE]", "operators": "You, Sabafon, Yemen Mobile"},
+    {"name": "Zambia", "flag": "[ZM]", "operators": "Airtel, MTN, Zamtel"},
+    {"name": "Zimbabwe", "flag": "[ZW]", "operators": "Econet, NetOne, Telecel"}
 ]
 
 COUNTRY_ALIASES = {
@@ -909,17 +1244,108 @@ COUNTRY_ALIASES = {
     'زيمبابوي': 'Zimbabwe', 'zimbabwe': 'Zimbabwe', 'زیمبابوه': 'Zimbabwe', '津巴布韦': 'Zimbabwe',
 }
 
+def get_user_display_name(user_entity, uid: int) -> str:
+    if user_entity and getattr(user_entity, "first_name", None):
+        return str(user_entity.first_name)
+    return f"عميل #{uid}"
+
+
+def get_membership_info(uid: int, lang: str = 'ar') -> dict:
+    api_row = cur.execute("SELECT api_key, created_date FROM dealer_api_keys WHERE user_id=?", (uid,)).fetchone()
+    if is_admin(uid):
+        return {
+            "tier": "إدارة / مطور" if lang == 'ar' else "Admin / Developer",
+            "key": "admin",
+            "discount": 50 if api_row else 0,
+            "has_api": api_row is not None,
+            "api_key": api_row[0] if api_row else "",
+            "created": api_row[1] if api_row else "",
+        }
+    if api_row:
+        return {
+            "tier": "تاجر API (خصم 50%)" if lang == 'ar' else "API Dealer (50% OFF)",
+            "key": "dealer",
+            "discount": 50,
+            "has_api": True,
+            "api_key": api_row[0],
+            "created": api_row[1],
+        }
+    return {
+        "tier": "عضو قياسي" if lang == 'ar' else "Standard Member",
+        "key": "standard",
+        "discount": 0,
+        "has_api": False,
+        "api_key": "",
+        "created": "",
+    }
+
+
+def main_menu(uid: int, first_name: str = ""):
+    lang = get_user_lang(uid) or 'ar'
+    t = LANGS.get(lang, LANGS['ar'])
+    balance = get_wallet_balance(uid)
+    orders_cnt = cur.execute("SELECT COUNT(*) FROM orders WHERE user_id=? AND status='paid'", (uid,)).fetchone()[0]
+    cart_cnt = cur.execute("SELECT COUNT(*) FROM cart WHERE user_id=?", (uid,)).fetchone()[0]
+    mem = get_membership_info(uid, lang)
+
+    greet_name = first_name.strip() if first_name else f"#{uid}"
+    if lang == 'ar':
+        text = (
+            f"{UITheme.header('Aura eSIM Elite — المتجر الرقمي الفاخر', 'store_logo', 'store')}\n\n"
+            f"<blockquote>{ce('welcome_spark', 'store')}مرحباً بك، <b>{greet_name}</b>\n"
+            f"{t['welcome_sub']}</blockquote>\n\n"
+            f"<blockquote>{ce('wallet', 'wallet')}<b>رصيد المحفظة:</b> <code>${balance:.2f}</code>\n"
+            f"{ce('vip', 'vip')}<b>حالة العضوية:</b> <b>{mem['tier']}</b>\n"
+            f"{ce('orders', 'orders')}<b>الطلبات المكتملة:</b> <code>{orders_cnt}</code> | "
+            f"{ce('cart', 'orders')}<b>السلة:</b> <code>{cart_cnt}</code></blockquote>"
+        )
+    else:
+        text = (
+            f"{UITheme.header('Aura eSIM Elite — Luxury Gateway', 'store_logo', 'store')}\n\n"
+            f"<blockquote>{ce('welcome_spark', 'store')}Welcome, <b>{greet_name}</b>\n"
+            f"{t['welcome_sub']}</blockquote>\n\n"
+            f"<blockquote>{ce('wallet', 'wallet')}<b>Wallet Balance:</b> <code>${balance:.2f}</code>\n"
+            f"{ce('vip', 'vip')}<b>Membership:</b> <b>{mem['tier']}</b>\n"
+            f"{ce('orders', 'orders')}<b>Completed Orders:</b> <code>{orders_cnt}</code> | "
+            f"{ce('cart', 'orders')}<b>Cart:</b> <code>{cart_cnt}</code></blockquote>"
+        )
+
+    btn = [
+        [Button.inline(t['btn_personal'], b'personal_section'), Button.inline(t['btn_search_plans'], b'search_plans_prompt')],
+        [Button.inline(t['btn_dealer'], b'dealer_section')],
+    ]
+    if not mem['has_api']:
+        btn.append([Button.inline(t['btn_dealer_api'], b'buy_api_sub_menu')])
+
+    btn.extend([
+        [Button.inline(f"{t['btn_cart']} ({cart_cnt})", b'view_cart'), Button.inline(f"{t['btn_wallet']} (${balance:.2f})", b'wallet')],
+        [Button.inline(f"{t['btn_orders']} ({orders_cnt})", b'my_orders_0'), Button.inline(t['btn_vip'], b'vip_membership')],
+        [Button.inline(t['btn_countries'], b'countries_list_0'), Button.inline(t['btn_support'], b'support_ticket')],
+        [Button.inline(t['btn_lang'], b'change_language')]
+    ])
+    if is_admin(uid):
+        btn.append([Button.inline(t['btn_admin'], b'admin_panel')])
+    return text, btn
+
+
 @client.on(events.NewMessage(pattern='/start'))
 async def start(event):
     uid = event.sender_id
-    if is_banned(uid): return
-    
+    if is_banned(uid):
+        return
+
+    user_entity = None
     try:
         user_entity = await event.sender
         u_name = user_entity.first_name if user_entity else "مستخدم"
         u_uname = f"@{user_entity.username}" if user_entity and user_entity.username else "بدون معرف"
-        notif_text = f"🚨 <b>إشعار دخول مستخدم جديد للبوت!</b>\n\n• الاسم: {u_name}\n• المعرف: {u_uname}\n• الآيدي: <code>{uid}</code>\n• الوقت: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-        await client.send_message(DEV_ID, notif_text, parse_mode='html')
+        notif_text = UITheme.header("إشعار دخول مستخدم للبوت", "alert", "warning") + (
+            f"\n<blockquote>• <b>الاسم:</b> {u_name}\n"
+            f"• <b>المعرف:</b> {u_uname}\n"
+            f"• <b>الآيدي:</b> <code>{uid}</code>\n"
+            f"• <b>الوقت:</b> {datetime.now().strftime('%Y-%m-%d %H:%M')}</blockquote>"
+        )
+        await safe_send(DEV_ID, notif_text)
     except Exception as e:
         logger.error(f"User join notification error: {e}")
 
@@ -933,175 +1359,310 @@ async def start(event):
                     cur.execute("INSERT OR IGNORE INTO users_settings (user_id, referred_by) VALUES (?, ?)", (uid, ref_id))
                     cur.execute("UPDATE users_settings SET referred_by=? WHERE user_id=?", (ref_id, uid))
                     conn.commit()
-        except:
+        except Exception:
             pass
 
     current_lang = get_user_lang(uid)
     if not current_lang:
         btn = [
-            [Button.inline("🇸🇦 العربية", b'set_lang_ar'), Button.inline("🇬🇧 English", b'set_lang_en')]
+            [Button.inline("[AR] العربية", b'set_lang_ar'), Button.inline("[EN] English", b'set_lang_en')]
         ]
-        await event.reply(
-            "<blockquote>⧺︰ <b>Welcome to Aura eSIM Elite! اختر لغتك المفضلة / Please select your language:</b></blockquote>",
-            buttons=btn, parse_mode='html'
+        await safe_reply(
+            event,
+            "<blockquote><b>Welcome to Aura eSIM Elite</b>\n━━━━━━━━━━━━━━━━━━━━\nاختر لغتك المفضلة / Please select your preferred language:</blockquote>",
+            buttons=btn
         )
         return
 
-    text, btn = main_menu(uid)
-    await event.reply(text, buttons=btn, parse_mode='html')
+    fname = get_user_display_name(user_entity, uid)
+    text, btn = main_menu(uid, fname)
+    await safe_reply(event, text, buttons=btn)
+
 
 @client.on(events.CallbackQuery)
 async def callback(event):
     uid = event.sender_id
-    if is_banned(uid): return
+    if is_banned(uid):
+        return
     data = event.data.decode()
     lang = get_user_lang(uid) or 'ar'
     t = LANGS.get(lang, LANGS['ar'])
-    
+
     if data.startswith('set_lang_'):
-        await event.answer()
         new_l = data.split('_')[2]
         set_user_lang(uid, new_l)
         new_t = LANGS.get(new_l, LANGS['ar'])
-        await event.answer(new_t['lang_changed'], alert=True)
-        text, btn = main_menu(uid)
-        await event.edit(text, buttons=btn, parse_mode='html')
+        await safe_answer(event, new_t['lang_changed'], alert=True)
+        sender = await event.get_sender()
+        text, btn = main_menu(uid, get_user_display_name(sender, uid))
+        await safe_edit(event, text, buttons=btn)
         return
 
     if data == 'main':
-        await event.answer()
-        text, btn = main_menu(uid)
-        await event.edit(text, buttons=btn, parse_mode='html')
+        await safe_answer(event)
+        sender = await event.get_sender()
+        text, btn = main_menu(uid, get_user_display_name(sender, uid))
+        await safe_edit(event, text, buttons=btn)
 
     elif data == 'change_language':
-        await event.answer()
+        await safe_answer(event)
         btn = [
-            [Button.inline("🇸🇦 العربية", b'set_lang_ar'), Button.inline("🇬🇧 English", b'set_lang_en')],
+            [Button.inline("[AR] العربية", b'set_lang_ar'), Button.inline("[EN] English", b'set_lang_en')],
             [Button.inline(t['back'], b'main')]
         ]
-        await event.edit("<blockquote>⧺︰ <b>اختر لغتك / Select language:</b></blockquote>", buttons=btn, parse_mode='html')
+        await safe_edit(
+            event,
+            UITheme.header("إعدادات اللغة / Language Settings", "language", "settings") + "\n\n" + t['choose_lang'],
+            buttons=btn
+        )
 
-    # قسم الأفراد (يعرض الأقسام المفعلة والظاهرة فقط)
+    # ------------------ قسم الأفراد والمتجر ------------------
     elif data == 'personal_section':
-        await event.answer()
+        await safe_answer(event)
         cats = cur.execute("SELECT slug, name_ar, name_en FROM categories WHERE slug NOT LIKE 'dealer_%' AND is_visible=1").fetchall()
         btn = []
         for slug, nar, nen in cats:
             lbl = nar if lang == 'ar' else nen
-            btn.append([Button.inline(lbl, f'open_cat_{slug}'.encode())])
+            btn.append([Button.inline(lbl, f'open_cat_{slug}_0'.encode())])
+        btn.append([Button.inline(t['btn_search_plans'], b'search_plans_prompt')])
         btn.append([Button.inline(t['back'], b'main')])
-        await event.edit(f"<blockquote>⧺︰ <b>{t['btn_personal']}</b></blockquote>", buttons=btn, parse_mode='html')
+        await safe_edit(
+            event,
+            UITheme.header(t['btn_personal'], "personal_section", "store") + "\n\n<blockquote>اختر المزود أو التصنيف المناسب لعرض الباقات المتاحة:</blockquote>",
+            buttons=btn
+        )
+
+    elif data == 'search_plans_prompt':
+        await safe_answer(event)
+        SessionManager.set(uid, f'search_plans_{uid}', True)
+        await safe_edit(
+            event,
+            UITheme.header("البحث عن باقة", "product", "products") + "\n\n<blockquote>أرسل اسم الباقة أو المزود أو المدة للبحث السريع (مثال: Vodafone أو Holafly أو 3 Months):</blockquote>",
+            buttons=[[Button.inline(t['back'], b'personal_section')]]
+        )
 
     elif data.startswith('open_cat_'):
-        await event.answer()
-        cat = data.replace('open_cat_', '')
-        plans = cur.execute("SELECT id, name, price_usd, months, minutes FROM esims WHERE category=? ORDER BY months ASC", (cat,)).fetchall()
+        await safe_answer(event)
+        raw = data.replace('open_cat_', '')
+        if raw.rsplit('_', 1)[-1].isdigit():
+            cat, page_str = raw.rsplit('_', 1)
+            page = max(0, int(page_str))
+        else:
+            cat, page = raw, 0
+
+        plans = cur.execute("SELECT id, name, price_usd, months, minutes, stock FROM esims WHERE category=? ORDER BY months ASC", (cat,)).fetchall()
+        per_page = 6
+        total_pages = max(1, (len(plans) + per_page - 1) // per_page)
+        page = min(page, total_pages - 1)
+        slice_plans = plans[page * per_page:(page + 1) * per_page]
+
         btn = []
-        for pid, name, price, m, mins in plans:
-            min_str = f" ({mins} دقيقة)" if mins > 0 else ""
-            btn.append([Button.inline(f"{name}{min_str} - ${price:.0f}", f'show_plan_{pid}_1'.encode())])
-        
+        for pid, name, price, m, mins, st in slice_plans:
+            min_str = f" | {mins} د" if mins > 0 else ""
+            st_str = " [نفد]" if st <= 0 else ""
+            btn.append([Button.inline(f"{name}{min_str} — ${price:.0f}{st_str}", f'show_plan_{pid}_1'.encode())])
+
+        if total_pages > 1:
+            nav = []
+            if page > 0:
+                nav.append(Button.inline(t['prev_page'], f'open_cat_{cat}_{page-1}'.encode()))
+            nav.append(Button.inline(f"{page+1}/{total_pages}", b'noop'))
+            if page + 1 < total_pages:
+                nav.append(Button.inline(t['next_page'], f'open_cat_{cat}_{page+1}'.encode()))
+            btn.append(nav)
+
         back_btn = b'personal_section' if not cat.startswith('dealer_') else b'dealer_section'
-        btn.append([Button.inline(t['back'], back_btn)])
-        
+        btn.append([Button.inline(t['back'], back_btn), Button.inline(t['home'], b'main')])
+
         cat_info = cur.execute("SELECT name_ar, name_en FROM categories WHERE slug=?", (cat,)).fetchone()
         title_cat = (cat_info[0] if lang == 'ar' else cat_info[1]) if cat_info else cat
         policy = WARRANTY_POLICY_TEXT.get(lang, WARRANTY_POLICY_TEXT['ar'])
-        select_dur = "اختر المدة المطلوبة:" if lang == 'ar' else "Select desired duration:"
-        await event.edit(f"<blockquote>⧺︰ <b>{title_cat}</b></blockquote>\n\n{policy}\n\n> ⧺︰ <b>{select_dur}</b>", buttons=btn, parse_mode='html')
+        select_dur = "اختر الباقة والمدة المطلوبة:" if lang == 'ar' else "Select desired plan:"
+        await safe_edit(
+            event,
+            f"{UITheme.header(title_cat, 'product', 'products')}\n\n{policy}\n\n<blockquote>{ce('sim_card', 'products')}<b>{select_dur}</b></blockquote>",
+            buttons=btn
+        )
 
-    # ========================================================
-    # إظهار تفاصيل الشريحة والكميات والخصم 10%
-    # ========================================================
+    # ------------------ تفاصيل الباقة والكمية والمراجعة ------------------
     elif data.startswith('show_plan_'):
-        await event.answer()
+        await safe_answer(event)
         parts = data.split('_')
         pid = int(parts[2])
         qty = int(parts[3]) if len(parts) > 3 else 1
-        if qty < 1: qty = 1
-        if qty > 50: qty = 50
+        qty = max(1, min(50, qty))
 
         plan = cur.execute("SELECT id, name, price_usd, minutes, months, stock, category, is_dealer, description FROM esims WHERE id=?", (pid,)).fetchone()
-        if not plan: 
-            return await event.answer("الباقة غير متوفرة", alert=True)
+        if not plan:
+            return await safe_answer("الباقة غير متوفرة.", alert=True)
 
         esim_id, name, unit_price, mins, months, stock, cat, is_dealer, desc = plan
+        if stock <= 0:
+            return await safe_edit(
+                event,
+                UITheme.error("نفاد المخزون", f"الباقة <b>{name}</b> غير متوفرة حالياً في المخزون."),
+                buttons=[[Button.inline(t['back'], f'open_cat_{cat}_0'.encode())]]
+            )
 
         api_row = cur.execute("SELECT id FROM dealer_api_keys WHERE user_id=?", (uid,)).fetchone()
         has_api = api_row is not None
-        if has_api and is_dealer:
-            unit_price *= 0.5
+        effective_unit = unit_price * 0.5 if (has_api and is_dealer) else unit_price
 
-        subtotal = unit_price * qty
+        subtotal = effective_unit * qty
         discount_percent = 10 if qty > 1 else 0
         discount_amount = subtotal * (discount_percent / 100.0)
         final_price = subtotal - discount_amount
 
+        existing_sess = SessionManager.get(uid, f'checkout_{uid}')
+        scope_label = existing_sess.get('scope', 'Global (عالمية)') if isinstance(existing_sess, dict) and existing_sess.get('esim_id') == esim_id else 'Global (عالمية)'
+
         SessionManager.set(uid, f'checkout_{uid}', {
             'esim_id': esim_id,
             'qty': qty,
-            'unit_price': unit_price,
+            'unit_price': effective_unit,
+            'subtotal': subtotal,
+            'discount_amount': discount_amount,
             'final_price': final_price,
             'name': name,
-            'is_dealer': is_dealer
+            'is_dealer': is_dealer,
+            'scope': scope_label,
         })
 
-        mins_text = f"\n⧺︰ <b>دقائق الاتصال:</b> <code>{mins} دقيقة اتصال رسمية</code>" if mins > 0 else "\n⧺︰ <b>النوع:</b> بيانات إنترنت فائقة السرعة بدون استخدام عادل"
-        discount_badge = f"\n⧺︰ <b>خصم الكميات الإضافي (10%):</b> <code>-${discount_amount:.2f}</code> (وفرت {discount_percent}%)" if discount_percent > 0 else ""
+        mins_text = f"\n{ce('sim_card', 'products')}<b>دقائق الاتصال:</b> <code>{mins} دقيقة رسمية</code>" if mins > 0 else f"\n{ce('sim_card', 'products')}<b>النوع:</b> بيانات إنترنت فقط"
+        discount_badge = f"\n{ce('discount', 'products')}<b>خصم الكميات (10%):</b> <code>-${discount_amount:.2f}</code>" if discount_percent > 0 else ""
 
-        info_text = f"""<blockquote>⧺︰ <b>تفاصيل الباقة: {name}</b>
-⧺︰ <b>المدة:</b> <code>{months} شهر</code>{mins_text}
-⧺︰ <b>سعر الشريحة الواحدة:</b> <code>${unit_price:.2f}</code>
-⧺︰ <b>المواصفات:</b> {desc}
-⧺︰ <b>المخزون المتوفر:</b> <code>{stock} شريحة</code></blockquote>
-
-<blockquote>⧺︰ <b>الكمية المحددة للشراء:</b> <code>{qty} شرائح</code>{discount_badge}
-⧺︰ <b>المبلغ الإجمالي المطلوب:</b> <code>${final_price:.2f}</code>
-⧺︰ <i>خصم 10% تلقائي مطبق على مشتريات أكثر من شريحة!</i></blockquote>"""
+        info_text = (
+            f"{UITheme.header(name, 'product', 'products')}\n\n"
+            f"<blockquote>"
+            f"{ce('coverage', 'countries')}<b>التغطية:</b> <code>{scope_label}</code>\n"
+            f"{ce('pending', 'pending')}<b>المدة:</b> <code>{months} شهر</code>{mins_text}\n"
+            f"{ce('balance', 'wallet')}<b>سعر الوحدة:</b> <code>${effective_unit:.2f}</code>\n"
+            f"{ce('stock', 'products')}<b>المخزون المتاح:</b> <code>{stock} شريحة</code>\n"
+            f"<b>المواصفات:</b> {desc}"
+            f"</blockquote>\n\n"
+            f"<blockquote>"
+            f"<b>ملخص التسعير:</b>\n"
+            f"• <b>الكمية:</b> <code>{qty}</code>\n"
+            f"• <b>المجموع الفرعي:</b> <code>${subtotal:.2f}</code>{discount_badge}\n"
+            f"• <b>الإجمالي النهائي:</b> <code>${final_price:.2f}</code>\n"
+            f"<i>خصم 10% تلقائي عند اختيار أكثر من شريحة.</i>"
+            f"</blockquote>"
+        )
 
         btn = [
             [
-                Button.inline("➖ تقليل", f'show_plan_{pid}_{qty-1}'.encode()),
-                Button.inline(f"الكمية: [{qty}]", b'noop'),
-                Button.inline("➕ زيادة", f'show_plan_{pid}_{qty+1}'.encode())
+                Button.inline("- تقليل", f'show_plan_{pid}_{qty-1}'.encode()),
+                Button.inline(f"الكمية: {qty}", b'noop'),
+                Button.inline("+ زيادة", f'show_plan_{pid}_{qty+1}'.encode())
             ],
             [
-                Button.inline("1 شريحة", f'show_plan_{pid}_1'.encode()),
+                Button.inline("1", f'show_plan_{pid}_1'.encode()),
                 Button.inline("2 (خصم 10%)", f'show_plan_{pid}_2'.encode()),
                 Button.inline("5 (خصم 10%)", f'show_plan_{pid}_5'.encode())
             ],
-            [Button.inline(f"⚡ شراء فوري من المحفظة (${final_price:.2f})", f'pay_wallet_now_{pid}'.encode())],
-            [Button.inline(t['pay_binance'], f'show_order_payments_{pid}'.encode())],
-            [Button.inline(t['add_to_cart'], f'add_cart_now_{pid}_{qty}'.encode())]
+            [Button.inline(t['type_country'], f'pick_country_{pid}_0'.encode())],
+            [Button.inline(f"مراجعة وتأكيد الشراء (${final_price:.2f})", f'review_buy_now_{pid}'.encode())],
+            [Button.inline(t['pay_binance'], f'show_order_payments_{pid}'.encode()), Button.inline(t['add_to_cart'], f'add_cart_now_{pid}_{qty}'.encode())],
+            [Button.inline(t['back'], f'open_cat_{cat}_0'.encode()), Button.inline(t['home'], b'main')]
         ]
-        back_dest = f'open_cat_{cat}'.encode()
-        btn.append([Button.inline(t['back'], back_dest)])
+        await safe_edit(event, info_text, buttons=btn)
 
-        try:
-            await event.edit(info_text, buttons=btn, parse_mode='html')
-        except errors.MessageNotModifiedError:
-            pass
+    elif data.startswith('pick_country_'):
+        await safe_answer(event)
+        parts = data.split('_')
+        pid = int(parts[2])
+        page = int(parts[3]) if len(parts) > 3 else 0
+        per_page = 12
+        total_pages = max(1, (len(COUNTRIES_DATA) + per_page - 1) // per_page)
+        page = max(0, min(page, total_pages - 1))
+        chunk = COUNTRIES_DATA[page * per_page:(page + 1) * per_page]
+
+        btn = []
+        row = []
+        for c in chunk:
+            row.append(Button.inline(f"{c['flag']} {c['name']}", f"set_plan_country_{pid}_{c['name']}".encode()))
+            if len(row) == 2:
+                btn.append(row)
+                row = []
+        if row:
+            btn.append(row)
+
+        nav = []
+        if page > 0:
+            nav.append(Button.inline(t['prev_page'], f'pick_country_{pid}_{page-1}'.encode()))
+        nav.append(Button.inline(f"{page+1}/{total_pages}", b'noop'))
+        if page + 1 < total_pages:
+            nav.append(Button.inline(t['next_page'], f'pick_country_{pid}_{page+1}'.encode()))
+        btn.append(nav)
+        btn.append([Button.inline(t['search_country_btn'], f'search_country_plan_{pid}'.encode())])
+        btn.append([Button.inline(t['back'], f'show_plan_{pid}_1'.encode())])
+        await safe_edit(event, UITheme.header(t['select_country_prompt'], "countries_globe", "countries"), buttons=btn)
+
+    elif data.startswith('search_country_plan_'):
+        await safe_answer(event)
+        pid = int(data.split('_')[3])
+        SessionManager.set(uid, f'search_country_for_{uid}', pid)
+        await safe_edit(event, UITheme.header(t['search_prompt'], "countries_globe", "countries"), buttons=[[Button.inline(t['back'], f'pick_country_{pid}_0'.encode())]])
+
+    elif data.startswith('set_plan_country_'):
+        await safe_answer(event, "تم تحديد الدولة بنجاح.", alert=False)
+        rest = data.replace('set_plan_country_', '')
+        pid_str, cname = rest.split('_', 1)
+        pid = int(pid_str)
+        sess = SessionManager.get(uid, f'checkout_{uid}')
+        qty = sess['qty'] if isinstance(sess, dict) else 1
+        if isinstance(sess, dict):
+            sess['scope'] = cname
+            SessionManager.set(uid, f'checkout_{uid}', sess)
+        event.data = f'show_plan_{pid}_{qty}'.encode()
+        await callback(event)
 
     elif data == 'noop':
-        await event.answer("استخدم أزرار + و - لتعديل الكمية", alert=False)
+        await safe_answer(event, "استخدم الأزرار المتاحة للتنقل أو تعديل الكمية.", alert=False)
 
     elif data.startswith('add_cart_now_'):
-        await event.answer()
         parts = data.split('_')
         pid = int(parts[3])
         qty = int(parts[4])
         sess = SessionManager.get(uid, f'checkout_{uid}')
-        price = sess['final_price'] if sess else 20.0
-        cur.execute("INSERT INTO cart (user_id, esim_id, scope, price) VALUES (?, ?, ?, ?)", (uid, pid, f"Qty: {qty}", price))
+        price = sess['final_price'] if isinstance(sess, dict) else 20.0
+        scope_txt = sess.get('scope', 'Global') if isinstance(sess, dict) else 'Global'
+        cur.execute("INSERT INTO cart (user_id, esim_id, scope, price) VALUES (?, ?, ?, ?)", (uid, pid, f"{scope_txt} | Qty: {qty}", price))
         conn.commit()
-        await event.answer("تمت الإضافة إلى سلة المشتريات بنجاح!", alert=True)
+        await safe_answer(event, "تمت الإضافة إلى سلة المشتريات بنجاح.", alert=True)
 
-    elif data.startswith('pay_wallet_now_'):
-        await event.answer()
+    elif data.startswith('review_buy_now_'):
+        await safe_answer(event)
         pid = int(data.split('_')[3])
         sess = SessionManager.get(uid, f'checkout_{uid}')
-        if not sess or sess['esim_id'] != pid:
-            return await event.answer("انتهت الجلسة", alert=True)
+        if not isinstance(sess, dict) or sess.get('esim_id') != pid:
+            return await safe_answer("انتهت جلسة الطلب، يرجى اختيار الباقة مجدداً.", alert=True)
+        bal = get_wallet_balance(uid)
+        review_txt = (
+            f"{UITheme.header('مراجعة الطلب قبل الدفع', 'invoice', 'payments')}\n\n"
+            f"<blockquote>"
+            f"• <b>المنتج:</b> {sess['name']}\n"
+            f"• <b>التغطية:</b> {sess.get('scope', 'Global')}\n"
+            f"• <b>الكمية:</b> <code>{sess['qty']}</code>\n"
+            f"• <b>الإجمالي المطلوب:</b> <code>${sess['final_price']:.2f}</code>\n"
+            f"• <b>رصيد محفظتك الحالي:</b> <code>${bal:.2f}</code>"
+            f"</blockquote>"
+        )
+        btn = [
+            [Button.inline(f"تأكيد ودفع الآن (${sess['final_price']:.2f})", f'pay_wallet_now_{pid}'.encode())],
+            [Button.inline(t['pay_binance'], f'show_order_payments_{pid}'.encode())],
+            [Button.inline(t['back'], f"show_plan_{pid}_{sess['qty']}".encode())]
+        ]
+        await safe_edit(event, review_txt, buttons=btn)
+
+    elif data.startswith('pay_wallet_now_'):
+        if not debounce.allow(uid, f'pay_wallet_{data}', cooldown=2.5):
+            return await safe_answer(event, "جاري تنفيذ طلبك بالفعل، يرجى الانتظار...", alert=True)
+        await safe_answer(event)
+        pid = int(data.split('_')[3])
+        sess = SessionManager.get(uid, f'checkout_{uid}')
+        if not isinstance(sess, dict) or sess.get('esim_id') != pid:
+            return await safe_answer("انتهت الجلسة، يرجى إعادة المحاولة.", alert=True)
 
         final_price = sess['final_price']
         qty = sess['qty']
@@ -1111,19 +1672,30 @@ async def callback(event):
             wallet_locks[uid] = asyncio.Lock()
 
         async with wallet_locks[uid]:
+            stock_row = cur.execute("SELECT stock FROM esims WHERE id=?", (pid,)).fetchone()
+            if not stock_row or stock_row[0] < qty:
+                return await safe_edit(
+                    event,
+                    UITheme.error("المخزون غير كافٍ", f"الكمية المتاحة حالياً أقل من المطلوب ({qty})."),
+                    buttons=[[Button.inline(t['back'], f'show_plan_{pid}_1'.encode())]]
+                )
             bal = get_wallet_balance(uid)
             if bal < final_price:
                 btn = [
                     [Button.inline("شحن المحفظة الآن", b'charge_wallet')],
                     [Button.inline(t['back'], b'main')]
                 ]
-                return await event.edit(f"<blockquote>⧺︰ <b>رصيدك غير كافي!</b>\nالرصيد المتاح: <code>${bal:.2f}</code> | المطلوب: <code>${final_price:.2f}</code></blockquote>", buttons=btn, parse_mode='html')
+                return await safe_edit(
+                    event,
+                    UITheme.error("رصيد غير كافٍ", f"الرصيد المتاح: <code>${bal:.2f}</code>\nالمبلغ المطلوب: <code>${final_price:.2f}</code>"),
+                    buttons=btn
+                )
 
             order_id = f"AURA{secrets.token_hex(4).upper()}"
             now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
             update_wallet(uid, -final_price, 'purchase', f"شراء {qty}x {name}")
             cur.execute("INSERT INTO orders VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                        (order_id, uid, pid, qty, final_price/qty, final_price, None, 'paid', sess['is_dealer'], 1, now_str, now_str))
+                        (order_id, uid, pid, qty, final_price / qty, final_price, None, 'paid', sess['is_dealer'], 1, now_str, now_str))
             cur.execute("UPDATE esims SET stock = stock - ? WHERE id=?", (qty, pid))
             conn.commit()
             await check_low_stock_and_alert(pid)
@@ -1135,143 +1707,288 @@ async def callback(event):
             bio = io.BytesIO(lpa_list.encode('utf-8'))
             bio.name = f"Aura_eSIMs_{order_id}.txt"
             bio.seek(0)
-            success_text = f"""<blockquote>🎉 <b>تم الشراء بنجاح مع تطبيق خصم 10%!</b>
-• <b>معرف الطلب:</b> <code>{order_id}</code>
-• <b>الباقة:</b> {name}
-• <b>العدد:</b> {qty} شرائح
-• <b>المبلغ المخصوم:</b> <code>${final_price:.2f}</code>
-تم إرفاق ملف أكواد التفعيل الموحدة أدناه:</blockquote>"""
-            await event.reply(success_text, file=bio, parse_mode='html')
+            success_text = UITheme.success(
+                "تم الشراء بنجاح مع خصم الكميات",
+                f"• <b>معرف الطلب:</b> <code>{order_id}</code>\n"
+                f"• <b>الباقة:</b> {name}\n"
+                f"• <b>العدد:</b> <code>{qty}</code>\n"
+                f"• <b>المبلغ المخصوم:</b> <code>${final_price:.2f}</code>\n"
+                f"تم إرفاق ملف أكواد التفعيل أدناه."
+            )
+            await safe_reply(event, success_text, file=bio)
         else:
-            success_single = f"""<blockquote>🎉 <b>تم الشراء بنجاح تام!</b>
-• <b>معرف الطلب:</b> <code>{order_id}</code>
-• <b>الباقة:</b> {name}
-• <b>المبلغ المخصوم:</b> <code>${final_price:.2f}</code>
+            success_single = UITheme.success(
+                "تم الشراء بنجاح تام",
+                f"• <b>معرف الطلب:</b> <code>{order_id}</code>\n"
+                f"• <b>الباقة:</b> {name}\n"
+                f"• <b>المبلغ المخصوم:</b> <code>${final_price:.2f}</code>\n\n"
+                f"{ce('lpa_code', 'orders')}<b>كود التفعيل الفوري (LPA):</b>\n<code>{DEFAULT_LPA}</code>\n\n"
+                f"{ce('qr_code', 'orders')}امسح الباركود المرفق لتفعيل الشريحة مباشرة."
+            )
+            await safe_reply(event, success_single, file=DEFAULT_BARCODE)
 
-• <b>كود التفعيل الفوري (LPA):</b>
-<code>{DEFAULT_LPA}</code>
+        sender = await event.get_sender()
+        text, btn = main_menu(uid, get_user_display_name(sender, uid))
+        await safe_respond(event, text, buttons=btn)
 
-• <b>امسح الباركود المرفق لتفعيل الشريحة مباشرة.</b></blockquote>"""
-            await event.reply(success_single, file=DEFAULT_BARCODE, parse_mode='html')
-
-        text, btn = main_menu(uid)
-        await event.respond("القائمة الرئيسية:", buttons=btn)
+    # ------------------ قسم التجار وVIP ------------------
+    elif data == 'vip_membership':
+        await safe_answer(event)
+        mem = get_membership_info(uid, lang)
+        bal = get_wallet_balance(uid)
+        orders_cnt = cur.execute("SELECT COUNT(*) FROM orders WHERE user_id=? AND status='paid'", (uid,)).fetchone()[0]
+        if mem['has_api']:
+            benefits = "• خصم دائم 50% على كافة باقات التجار.\n• وصول كامل لمفتاح الـ API الرسمي.\n• أولوية في الدعم الفني والتجهيز."
+            start_dt = mem['created'] or "مفعل"
+            exp_dt = "اشتراك دائم"
+        else:
+            benefits = "• خصم 10% تلقائي عند شراء أكثر من شريحة.\n• ضمان ذهبي لمدة 3 أشهر على جميع الشرائح.\n• إمكانية الترقية إلى باقة التجار API بخصم 50%."
+            start_dt = "منذ التسجيل"
+            exp_dt = "مستمر"
+        vip_txt = (
+            f"{UITheme.header('حالة العضوية وVIP', 'vip', 'vip')}\n\n"
+            f"<blockquote>"
+            f"{ce('crown', 'vip')}<b>العضوية الحالية:</b> <b>{mem['tier']}</b>\n"
+            f"{ce('pending', 'pending')}<b>تاريخ البداية:</b> <code>{start_dt}</code>\n"
+            f"{ce('pending', 'pending')}<b>الصلاحية:</b> <code>{exp_dt}</code>\n"
+            f"{ce('balance', 'wallet')}<b>الرصيد:</b> <code>${bal:.2f}</code> | <b>الطلبات:</b> <code>{orders_cnt}</code>"
+            f"</blockquote>\n\n"
+            f"<blockquote><b>المميزات والصلاحيات المتاحة لك:</b>\n{benefits}</blockquote>"
+        )
+        btn = []
+        if not mem['has_api']:
+            btn.append([Button.inline(t['btn_dealer_api'], b'buy_api_sub_menu')])
+        btn.append([Button.inline(t['back'], b'main')])
+        await safe_edit(event, vip_txt, buttons=btn)
 
     elif data == 'dealer_section':
-        await event.answer()
-        api_row = cur.execute("SELECT api_key FROM dealer_api_keys WHERE user_id=?", (uid,)).fetchone()
+        await safe_answer(event)
+        mem = get_membership_info(uid, lang)
+        bal = get_wallet_balance(uid)
+        dlr_orders = cur.execute("SELECT COUNT(*), COALESCE(SUM(total_usd), 0) FROM orders WHERE user_id=? AND is_dealer=1 AND status='paid'", (uid,)).fetchone()
         cats = cur.execute("SELECT slug, name_ar, name_en FROM categories WHERE slug LIKE 'dealer_%' AND is_visible=1").fetchall()
         btn = []
         for slug, nar, nen in cats:
             lbl = nar if lang == 'ar' else nen
-            btn.append([Button.inline(lbl, f'open_cat_{slug}'.encode())])
-        
-        if not api_row:
+            btn.append([Button.inline(lbl, f'open_cat_{slug}_0'.encode())])
+
+        if not mem['has_api']:
             btn.append([Button.inline(t['btn_dealer_api'], b'buy_api_sub_menu')])
         else:
-            btn.append([Button.inline("عرض تفاصيل مفتاح الـ API", b'view_api_key_info')])
+            btn.append([Button.inline("تفاصيل مفتاح الـ API", b'view_api_key_info'), Button.inline("سجل معاملات التاجر", b'wallet_transactions_0')])
         btn.append([Button.inline(t['back'], b'main')])
-        await event.edit(f"<blockquote>⧺︰ <b>{t['dealer_title']}</b></blockquote>", buttons=btn, parse_mode='html')
+
+        dlr_txt = (
+            f"{UITheme.header(t['dealer_title'], 'dealer', 'dealers')}\n\n"
+            f"<blockquote>"
+            f"{ce('wholesale', 'dealers')}<b>حالة الحساب:</b> <b>{mem['tier']}</b>\n"
+            f"{ce('balance', 'wallet')}<b>رصيد التاجر:</b> <code>${bal:.2f}</code>\n"
+            f"{ce('orders', 'orders')}<b>طلبات الجملة:</b> <code>{dlr_orders[0]}</code> | <b>إجمالي المشتريات:</b> <code>${dlr_orders[1]:.2f}</code>"
+            f"</blockquote>"
+        )
+        await safe_edit(event, dlr_txt, buttons=btn)
 
     elif data == 'buy_api_sub_menu':
-        await event.answer()
+        await safe_answer(event)
         api_row = cur.execute("SELECT api_key FROM dealer_api_keys WHERE user_id=?", (uid,)).fetchone()
         if api_row:
-            return await event.answer("لديك اشتراك API مفعل مسبقاً!", alert=True)
+            return await safe_answer("لديك اشتراك API مفعل مسبقاً.", alert=True)
         btn = [
-            [Button.inline("شراء تفعيل API الآن مقابل $100", b'confirm_buy_api_sub')],
+            [Button.inline("تأكيد وشراء API الآن ($100)", b'confirm_buy_api_sub')],
             [Button.inline(t['back'], b'dealer_section')]
         ]
-        desc_sub = "🔌 <b>اشتراك وتفعيل نظام الـ API للتجار:</b>\n\n• تكلفة التفعيل لمرة واحدة: <b>$100</b>\n• المميزات: خصم دائم <b>50%</b> على كافة خدمات ومخزون البوت + مفتاح API رسمي."
-        await event.edit(desc_sub, buttons=btn, parse_mode='html')
+        desc_sub = (
+            f"{UITheme.header('تفعيل نظام الـ API للتجار', 'api_key', 'dealers')}\n\n"
+            f"<blockquote>• <b>تكلفة التفعيل لمرة واحدة:</b> <code>$100.00</code>\n"
+            f"• <b>المميزات:</b> خصم دائم <b>50%</b> على باقات التجار + مفتاح API رسمي خاص بك.</blockquote>"
+        )
+        await safe_edit(event, desc_sub, buttons=btn)
 
     elif data == 'confirm_buy_api_sub':
-        await event.answer()
-        balance = get_wallet_balance(uid)
-        if balance < 100.0:
-            return await event.answer(t['insufficient_balance'], alert=True)
-        update_wallet(uid, -100.0, 'api_subscription', 'شراء تفعيل نظام API للتجار')
-        api_key = f"AURA_API_{secrets.token_hex(16).upper()}"
-        cur.execute("INSERT OR REPLACE INTO dealer_api_keys (user_id, api_key, created_date) VALUES (?, ?, ?)", 
-                    (uid, api_key, datetime.now().strftime("%Y-%m-%d %H:%M")))
-        conn.commit()
-        success_txt = f"🎉 <b>تم تفعيل اشتراك الـ API بنجاح:</b>\n\n<code>{api_key}</code>\n\nتم تطبيق خصم 50% على جميع طلبات الجملة."
-        btn = [[Button.inline(t['back'], b'main')]]
-        await event.edit(success_txt, buttons=btn, parse_mode='html')
+        if not debounce.allow(uid, 'buy_api_sub', cooldown=3.0):
+            return await safe_answer(event, "جاري المعالجة، يرجى الانتظار...", alert=True)
+        await safe_answer(event)
+        if uid not in wallet_locks:
+            wallet_locks[uid] = asyncio.Lock()
+        async with wallet_locks[uid]:
+            existing = cur.execute("SELECT api_key FROM dealer_api_keys WHERE user_id=?", (uid,)).fetchone()
+            if existing:
+                return await safe_answer("لديك اشتراك API مفعل مسبقاً.", alert=True)
+            balance = get_wallet_balance(uid)
+            if balance < 100.0:
+                return await safe_answer(t['insufficient_balance'], alert=True)
+            update_wallet(uid, -100.0, 'api_subscription', 'شراء تفعيل نظام API للتجار')
+            api_key = f"AURA_API_{secrets.token_hex(16).upper()}"
+            cur.execute("INSERT OR REPLACE INTO dealer_api_keys (user_id, api_key, created_date) VALUES (?, ?, ?)",
+                        (uid, api_key, datetime.now().strftime("%Y-%m-%d %H:%M")))
+            conn.commit()
+        success_txt = UITheme.success(
+            "تم تفعيل اشتراك الـ API بنجاح",
+            f"مفتاح الـ API الخاص بك:\n<code>{api_key}</code>\n\nتم تفعيل خصم 50% على باقات الجملة."
+        )
+        await safe_edit(event, success_txt, buttons=[[Button.inline(t['back'], b'dealer_section')]])
 
     elif data == 'view_api_key_info':
-        await event.answer()
-        api_row = cur.execute("SELECT api_key FROM dealer_api_keys WHERE user_id=?", (uid,)).fetchone()
-        if not api_row: return await event.answer("ليس لديك اشتراك API", alert=True)
-        info_msg = f"🔌 <b>مفتاح الـ API الخاص بك:</b>\n<code>{api_row[0]}</code>\n\nتستفيد الآن من خصم 50% على باقات الجملة."
-        btn = [[Button.inline(t['back'], b'dealer_section')]]
-        await event.edit(info_msg, buttons=btn, parse_mode='html')
+        await safe_answer(event)
+        api_row = cur.execute("SELECT api_key, created_date FROM dealer_api_keys WHERE user_id=?", (uid,)).fetchone()
+        if not api_row:
+            return await safe_answer("ليس لديك اشتراك API مفعل.", alert=True)
+        info_msg = (
+            f"{UITheme.header('بيانات مفتاح الـ API الخاص بك', 'api_key', 'dealers')}\n\n"
+            f"<blockquote>• <b>المفتاح:</b>\n<code>{api_row[0]}</code>\n"
+            f"• <b>تاريخ التفعيل:</b> <code>{api_row[1]}</code>\n"
+            f"• <b>الخصم المطبق:</b> <code>50%</code></blockquote>"
+        )
+        await safe_edit(event, info_msg, buttons=[[Button.inline(t['back'], b'dealer_section')]])
 
+    # ------------------ المحفظة والمعاملات ------------------
     elif data == 'wallet':
-        await event.answer()
+        await safe_answer(event)
         balance = get_wallet_balance(uid)
+        dep_row = cur.execute("SELECT COALESCE(total_deposited, 0) FROM wallets WHERE user_id=?", (uid,)).fetchone()
+        total_dep = dep_row[0] if dep_row else 0.0
         bot_me = await client.get_me()
         ref_link = f"https://t.me/{bot_me.username}?start=ref{uid}"
-        text = f"{t['wallet_title']}\n\n<blockquote>⧺︰ <b>{t['current_balance']}:</b> <code>${balance:.2f}</code></blockquote>\n\n<blockquote>⧺︰ <b>رابط الإحالة الخاص بك:</b>\n<code>{ref_link}</code></blockquote>"
+        text = (
+            f"{UITheme.header(t['wallet_title'], 'wallet', 'wallet')}\n\n"
+            f"<blockquote>"
+            f"{ce('balance', 'wallet')}<b>{t['current_balance']}:</b> <code>${balance:.2f}</code>\n"
+            f"{ce('deposit', 'wallet')}<b>إجمالي الإيداعات:</b> <code>${total_dep:.2f}</code>"
+            f"</blockquote>\n\n"
+            f"<blockquote>{ce('referral', 'wallet')}<b>رابط الإحالة الخاص بك:</b>\n<code>{ref_link}</code></blockquote>"
+        )
         btn = [
-            [Button.inline(t['charge_wallet_btn'], b'charge_wallet')],
-            [Button.inline(t['btn_transactions'], b'wallet_transactions')],
+            [Button.inline(t['charge_wallet_btn'], b'charge_wallet'), Button.inline(t['btn_transactions'], b'wallet_transactions_0')],
             [Button.inline(t['btn_verify_payment'], b'verify_payment_menu')],
             [Button.inline(t['back'], b'main')]
         ]
-        await event.edit(text, buttons=btn, parse_mode='html')
+        await safe_edit(event, text, buttons=btn)
 
     elif data == 'charge_wallet':
-        await event.answer()
+        await safe_answer(event)
         SessionManager.set(uid, f'charge_amount_prompt_{uid}', True)
-        await event.edit(t['charge_prompt'], buttons=[[Button.inline(t['back'], b'wallet')]], parse_mode='html')
+        await safe_edit(event, t['charge_prompt'], buttons=[[Button.inline(t['back'], b'wallet')]])
 
-    elif data == 'wallet_transactions':
-        await event.answer()
-        txs = cur.execute("SELECT type, amount, balance_after, description, date FROM wallet_transactions WHERE user_id=? ORDER BY id DESC LIMIT 10", (uid,)).fetchall()
+    elif data == 'wallet_transactions' or data.startswith('wallet_transactions_'):
+        await safe_answer(event)
+        page = int(data.split('_')[2]) if data.startswith('wallet_transactions_') else 0
+        per_page = 6
+        total = cur.execute("SELECT COUNT(*) FROM wallet_transactions WHERE user_id=?", (uid,)).fetchone()[0]
+        total_pages = max(1, (total + per_page - 1) // per_page)
+        page = max(0, min(page, total_pages - 1))
+        txs = cur.execute(
+            "SELECT id, type, amount, balance_after, description, date FROM wallet_transactions WHERE user_id=? ORDER BY id DESC LIMIT ? OFFSET ?",
+            (uid, per_page, page * per_page)
+        ).fetchall()
         if not txs:
-            return await event.edit("<blockquote>📜 لا توجد حركات مالية مسجلة في محفظتك حتى الآن.</blockquote>", buttons=[[Button.inline(t['back'], b'wallet')]], parse_mode='html')
-        tx_text = "<blockquote>📜 سجل آخر المعاملات المالية في محفظتك:</blockquote>\n\n"
-        for t_type, amt, b_after, desc, date in txs:
+            return await safe_edit(
+                event,
+                UITheme.header("سجل المعاملات المالية", "invoice", "payments") + "\n\n<blockquote>لا توجد حركات مالية مسجلة في محفظتك حتى الآن.</blockquote>",
+                buttons=[[Button.inline(t['back'], b'wallet')]]
+            )
+        tx_text = f"{UITheme.header('سجل المعاملات المالية', 'invoice', 'payments')}\n\n"
+        for tx_id, t_type, amt, b_after, desc, date in txs:
             sign = "+" if amt > 0 else ""
-            tx_text += f"• <b>{desc}</b>\n  ↳ المبلغ: <code>{sign}${amt:.2f}</code> | الرصيد بعد: <code>${b_after:.2f}</code>\n  ↳ التاريخ: {date}\n───────────────────\n"
-        btn = [[Button.inline(t['back'], b'wallet')]]
-        await event.edit(tx_text, buttons=btn, parse_mode='html')
-
-    elif data == 'view_cart':
-        await event.answer()
-        items = cur.execute("SELECT c.id, e.name, c.scope, c.price FROM cart c JOIN esims e ON c.esim_id=e.id WHERE c.user_id=?", (uid,)).fetchall()
-        if not items:
-            return await event.edit("<blockquote>سلة المشتريات فارغة تماماً.</blockquote>", buttons=[[Button.inline(t['back'], b'main')]], parse_mode='html')
-        total_cart = sum(i[3] for i in items)
-        cart_text = "<blockquote>محتويات سلة المشتريات:</blockquote>\n\n"
+            tx_text += (
+                f"<blockquote>• <b>#{tx_id} — {desc}</b>\n"
+                f"  المبلغ: <code>{sign}${amt:.2f}</code> | الرصيد بعد: <code>${b_after:.2f}</code>\n"
+                f"  التاريخ: <code>{date}</code></blockquote>\n"
+            )
         btn = []
-        for cid, name, sc, pr in items:
-            cart_text += f"• <b>{name}</b> ({sc}) - <code>${pr:.2f}</code>\n"
-            btn.append([Button.inline(f"حذف: {name}", f"cart_del_{cid}".encode())])
-        cart_text += f"\n> ⧺︰ <b>الإجمالي:</b> <code>${total_cart:.2f}</code>"
-        btn.append([Button.inline(f"دفع السلة من المحفظة (${total_cart:.2f})", b'cart_checkout')])
+        if total_pages > 1:
+            nav = []
+            if page > 0:
+                nav.append(Button.inline(t['prev_page'], f'wallet_transactions_{page-1}'.encode()))
+            nav.append(Button.inline(f"{page+1}/{total_pages}", b'noop'))
+            if page + 1 < total_pages:
+                nav.append(Button.inline(t['next_page'], f'wallet_transactions_{page+1}'.encode()))
+            btn.append(nav)
+        btn.append([Button.inline(t['back'], b'wallet')])
+        await safe_edit(event, tx_text, buttons=btn)
+
+    # ------------------ السلة ------------------
+    elif data == 'view_cart':
+        await safe_answer(event)
+        items = cur.execute("SELECT c.id, c.esim_id, e.name, e.price_usd, c.scope, c.price FROM cart c JOIN esims e ON c.esim_id=e.id WHERE c.user_id=?", (uid,)).fetchall()
+        if not items:
+            return await safe_edit(
+                event,
+                UITheme.header(t['btn_cart'], "cart", "orders") + "\n\n<blockquote>سلة المشتريات فارغة تماماً.</blockquote>",
+                buttons=[[Button.inline("تصفح الباقات", b'personal_section')], [Button.inline(t['back'], b'main')]]
+            )
+        total_cart = sum(i[5] for i in items)
+        cart_text = f"{UITheme.header('سلة المشتريات', 'cart', 'orders')}\n\n"
+        btn = []
+        for cid, eid, name, unit_p, sc, pr in items:
+            cart_text += f"<blockquote>• <b>{name}</b> ({sc})\n  السعر الفردي: <code>${unit_p:.2f}</code> | الإجمالي: <code>${pr:.2f}</code></blockquote>\n"
+            btn.append([
+                Button.inline(f"+ زيادة ({name[:12]})", f"cart_qty_{cid}_1".encode()),
+                Button.inline("حذف", f"cart_del_{cid}".encode())
+            ])
+        cart_text += f"\n<blockquote><b>الإجمالي النهائي للسلة:</b> <code>${total_cart:.2f}</code></blockquote>"
+        btn.append([Button.inline(f"تأكيد وشراء السلة (${total_cart:.2f})", b'cart_confirm')])
         btn.append([Button.inline(t['back'], b'main')])
-        await event.edit(cart_text, buttons=btn, parse_mode='html')
+        await safe_edit(event, cart_text, buttons=btn)
+
+    elif data.startswith('cart_qty_'):
+        parts = data.split('_')
+        cid = int(parts[2])
+        row = cur.execute("SELECT c.esim_id, c.scope, c.price, e.price_usd FROM cart c JOIN esims e ON c.esim_id=e.id WHERE c.id=? AND c.user_id=?", (cid, uid)).fetchone()
+        if row:
+            eid, sc, old_pr, unit_p = row
+            m_q = re.search(r"Qty:\s*(\d+)", sc or "")
+            qty = int(m_q.group(1)) if m_q else 1
+            qty = min(50, qty + 1)
+            new_sc = re.sub(r"Qty:\s*\d+", f"Qty: {qty}", sc) if m_q else f"{sc} | Qty: {qty}"
+            sub = unit_p * qty
+            new_pr = sub * (0.9 if qty > 1 else 1.0)
+            cur.execute("UPDATE cart SET scope=?, price=? WHERE id=? AND user_id=?", (new_sc, new_pr, cid, uid))
+            conn.commit()
+        await safe_answer(event, "تم تحديث الكمية وتطبيق الخصم.", alert=False)
+        event.data = b'view_cart'
+        await callback(event)
 
     elif data.startswith('cart_del_'):
-        await event.answer()
         cid = int(data.split('_')[2])
         cur.execute("DELETE FROM cart WHERE id=? AND user_id=?", (cid, uid))
         conn.commit()
+        await safe_answer(event, "تم حذف المنتج من السلة.", alert=False)
+        event.data = b'view_cart'
         await callback(event)
 
-    elif data == 'cart_checkout':
-        await event.answer()
+    elif data == 'cart_confirm':
+        await safe_answer(event)
         items = cur.execute("SELECT c.esim_id, c.price, e.name FROM cart c JOIN esims e ON c.esim_id=e.id WHERE c.user_id=?", (uid,)).fetchall()
-        if not items: return await event.answer("السلة فارغة", alert=True)
+        if not items:
+            return await safe_answer("السلة فارغة.", alert=True)
+        total_price = sum(item[1] for item in items)
+        bal = get_wallet_balance(uid)
+        confirm_txt = (
+            f"{UITheme.header('تأكيد شراء السلة', 'invoice', 'payments')}\n\n"
+            f"<blockquote>• <b>عدد العناصر:</b> <code>{len(items)}</code>\n"
+            f"• <b>الإجمالي النهائي:</b> <code>${total_price:.2f}</code>\n"
+            f"• <b>رصيد محفظتك:</b> <code>${bal:.2f}</code></blockquote>"
+        )
+        btn = [
+            [Button.inline(f"دفع الآن (${total_price:.2f})", b'cart_checkout')],
+            [Button.inline(t['back'], b'view_cart')]
+        ]
+        await safe_edit(event, confirm_txt, buttons=btn)
+
+    elif data == 'cart_checkout':
+        if not debounce.allow(uid, 'cart_checkout', cooldown=2.5):
+            return await safe_answer(event, "جاري تنفيذ طلبك، يرجى الانتظار...", alert=True)
+        await safe_answer(event)
+        items = cur.execute("SELECT c.esim_id, c.price, e.name FROM cart c JOIN esims e ON c.esim_id=e.id WHERE c.user_id=?", (uid,)).fetchall()
+        if not items:
+            return await safe_answer("السلة فارغة.", alert=True)
         total_price = sum(item[1] for item in items)
         if uid not in wallet_locks:
             wallet_locks[uid] = asyncio.Lock()
         async with wallet_locks[uid]:
             bal = get_wallet_balance(uid)
             if bal < total_price:
-                return await event.answer(t['insufficient_balance'], alert=True)
+                return await safe_answer(t['insufficient_balance'], alert=True)
             order_id = f"AURA{secrets.token_hex(4).upper()}"
             now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
             update_wallet(uid, -total_price, 'purchase', f"شراء سلة مشتريات {order_id}")
@@ -1281,326 +1998,577 @@ async def callback(event):
                 cur.execute("UPDATE esims SET stock=stock-1 WHERE id=?", (eid,))
             cur.execute("DELETE FROM cart WHERE user_id=?", (uid,))
             conn.commit()
-        await event.reply(f"<blockquote>🎉 <b>تم دفع السلة بنجاح!</b>\nكود التفعيل (LPA):\n<code>{DEFAULT_LPA}</code></blockquote>", file=DEFAULT_BARCODE, parse_mode='html')
-        text, btn = main_menu(uid)
-        await event.respond("الرئيسية:", buttons=btn)
+        await safe_reply(
+            event,
+            UITheme.success("تم دفع السلة بنجاح", f"رقم العملية: <code>{order_id}</code>\nكود التفعيل (LPA):\n<code>{DEFAULT_LPA}</code>"),
+            file=DEFAULT_BARCODE
+        )
+        sender = await event.get_sender()
+        text, btn = main_menu(uid, get_user_display_name(sender, uid))
+        await safe_respond(event, text, buttons=btn)
 
-    elif data == 'my_orders':
-        await event.answer()
-        orders = cur.execute("SELECT o.order_id, e.name, o.quantity, o.total_usd, o.created_date FROM orders o JOIN esims e ON o.esim_id=e.id WHERE o.user_id=? AND o.status='paid' ORDER BY o.created_date DESC LIMIT 10", (uid,)).fetchall()
-        if not orders: return await event.edit(t['no_orders'], buttons=[[Button.inline(t['back'], b'main')]], parse_mode='html')
-        text = f"{t['my_orders_title']}\n\n"
+    # ------------------ الطلبات ------------------
+    elif data == 'my_orders' or data.startswith('my_orders_'):
+        await safe_answer(event)
+        page = int(data.split('_')[2]) if data.startswith('my_orders_') else 0
+        per_page = 6
+        total = cur.execute("SELECT COUNT(*) FROM orders WHERE user_id=? AND status='paid'", (uid,)).fetchone()[0]
+        if not total:
+            return await safe_edit(
+                event,
+                UITheme.header(t['my_orders_title'], "orders", "orders") + f"\n\n<blockquote>{t['no_orders']}</blockquote>",
+                buttons=[[Button.inline(t['back'], b'main')]]
+            )
+        total_pages = max(1, (total + per_page - 1) // per_page)
+        page = max(0, min(page, total_pages - 1))
+        orders = cur.execute(
+            "SELECT o.order_id, e.name, o.quantity, o.total_usd, o.created_date FROM orders o JOIN esims e ON o.esim_id=e.id WHERE o.user_id=? AND o.status='paid' ORDER BY o.created_date DESC LIMIT ? OFFSET ?",
+            (uid, per_page, page * per_page)
+        ).fetchall()
+        text = f"{UITheme.header(t['my_orders_title'], 'orders', 'orders')}\n\n"
         btn = []
-        for order_id, name, qty, total, date in orders:
-            text += f"• <b>{qty}x {name}</b> ({date}) | ${total:.2f}\n"
-            btn.append([Button.inline(f"تفاصيل الطلب: {order_id}", f"reload_{order_id}".encode())])
+        for order_id, name, qty, total_u, date in orders:
+            text += f"<blockquote>• <b>{qty}x {name}</b>\n  المبلغ: <code>${total_u:.2f}</code> | التاريخ: <code>{date}</code></blockquote>\n"
+            btn.append([Button.inline(f"عرض تفاصيل #{order_id}", f"reload_{order_id}".encode())])
+        if total_pages > 1:
+            nav = []
+            if page > 0:
+                nav.append(Button.inline(t['prev_page'], f'my_orders_{page-1}'.encode()))
+            nav.append(Button.inline(f"{page+1}/{total_pages}", b'noop'))
+            if page + 1 < total_pages:
+                nav.append(Button.inline(t['next_page'], f'my_orders_{page+1}'.encode()))
+            btn.append(nav)
         btn.append([Button.inline(t['back'], b'main')])
-        await event.edit(text, buttons=btn, parse_mode='html')
+        await safe_edit(event, text, buttons=btn)
 
     elif data.startswith('reload_'):
-        await event.answer()
+        await safe_answer(event)
         oid = data.replace('reload_', '')
-        await event.reply(f"<blockquote>تفاصيل الطلب [{oid}]:\nكود LPA الموحد:\n<code>{DEFAULT_LPA}</code></blockquote>", file=DEFAULT_BARCODE, parse_mode='html')
+        row = cur.execute("SELECT o.order_id, e.name, o.quantity, o.total_usd, o.created_date FROM orders o LEFT JOIN esims e ON o.esim_id=e.id WHERE o.order_id=? AND o.user_id=?", (oid, uid)).fetchone()
+        if not row:
+            return await safe_answer("الطلب غير موجود.", alert=True)
+        _, ename, qty, tot, dt = row
+        await safe_reply(
+            event,
+            UITheme.header(f"فاتورة وتفاصيل الطلب #{oid}", "invoice", "payments") + (
+                f"\n\n<blockquote>• <b>الباقة:</b> {ename}\n"
+                f"• <b>الكمية:</b> <code>{qty}</code> | <b>الإجمالي:</b> <code>${tot:.2f}</code>\n"
+                f"• <b>التاريخ:</b> <code>{dt}</code>\n\n"
+                f"{ce('lpa_code', 'orders')}<b>كود LPA الموحد:</b>\n<code>{DEFAULT_LPA}</code></blockquote>"
+            ),
+            file=DEFAULT_BARCODE
+        )
 
-    elif data == 'countries_list':
-        await event.answer()
-        c_text = "".join([f"⧺︰ {c['flag']} <b>{c['name']}</b> - {c['operators']}\n" for c in COUNTRIES_DATA])
-        btn = [[Button.inline(t['back'], b'main')]]
-        await event.edit(t['countries_header'].replace("COUNTRIES_COUNT", str(len(COUNTRIES_DATA))) + c_text, buttons=btn, parse_mode='html')
+    # ------------------ الدول المدعومة ------------------
+    elif data == 'countries_list' or data.startswith('countries_list_'):
+        await safe_answer(event)
+        page = int(data.split('_')[2]) if data.startswith('countries_list_') else 0
+        per_page = 25
+        total_pages = max(1, (len(COUNTRIES_DATA) + per_page - 1) // per_page)
+        page = max(0, min(page, total_pages - 1))
+        chunk = COUNTRIES_DATA[page * per_page:(page + 1) * per_page]
+        c_text = "".join([f"• <code>{c['flag']}</code> <b>{c['name']}</b> — {c['operators']}\n" for c in chunk])
+        header = UITheme.header(t['countries_header'].replace("COUNTRIES_COUNT", str(len(COUNTRIES_DATA))), "countries_globe", "countries")
+        btn = []
+        nav = []
+        if page > 0:
+            nav.append(Button.inline(t['prev_page'], f'countries_list_{page-1}'.encode()))
+        nav.append(Button.inline(f"{page+1}/{total_pages}", b'noop'))
+        if page + 1 < total_pages:
+            nav.append(Button.inline(t['next_page'], f'countries_list_{page+1}'.encode()))
+        btn.append(nav)
+        btn.append([Button.inline(t['back'], b'main')])
+        await safe_edit(event, f"{header}\n\n<blockquote>{c_text}</blockquote>", buttons=btn)
 
     elif data == 'verify_payment_menu':
-        await event.answer()
+        await safe_answer(event)
         SessionManager.set(uid, f'verify_payment_{uid}', True)
-        await event.edit(t['verify_prompt'], buttons=[[Button.inline(t['back'], b'wallet')]], parse_mode='html')
+        await safe_edit(event, t['verify_prompt'], buttons=[[Button.inline(t['back'], b'wallet')]])
 
     elif data == 'support_ticket':
-        await event.answer()
+        await safe_answer(event)
         SessionManager.set(uid, f'support_ticket_{uid}', True)
-        await event.edit(t['support_prompt'], buttons=[[Button.inline(t['back'], b'main')]], parse_mode='html')
+        await safe_edit(event, t['support_prompt'], buttons=[[Button.inline(t['back'], b'main')]])
 
     elif data.startswith('show_order_payments_'):
-        await event.answer()
+        await safe_answer(event)
         pid = int(data.split('_')[3])
         sess = SessionManager.get(uid, f'checkout_{uid}')
-        price = sess['final_price'] if sess else 20.0
+        price = sess['final_price'] if isinstance(sess, dict) else 20.0
         networks = cur.execute("SELECT network_name, address, binance_id FROM binance_networks").fetchall()
-        details_text = f"<blockquote>⧺︰ <b>بوابة الدفع الشاملة</b>\nالمبلغ المطلوب: <code>${price:.2f}</code></blockquote>\n\n"
+        details_text = UITheme.header(f"بوابة الدفع الشاملة — المطلوب: ${price:.2f}", "payment", "payments") + "\n\n"
         for idx, (n_name, n_addr, n_id) in enumerate(networks, 1):
-            details_text += f"<b>{idx}. {n_name}</b>\n"
-            if n_id: details_text += f"• <code>ID:</code> <code>{n_id}</code>\n"
-            if n_addr: details_text += f"• <code>Address:</code> <code>{n_addr}</code>\n"
-            details_text += "───────────────────\n"
+            details_text += f"<blockquote><b>{idx}. {n_name}</b>\n"
+            if n_id:
+                details_text += f"• <b>ID:</b> <code>{n_id}</code>\n"
+            if n_addr:
+                details_text += f"• <b>Address:</b> <code>{n_addr}</code>\n"
+            details_text += "</blockquote>\n"
         btn = [
             [Button.inline(t['btn_verify_now'], b'verify_payment_menu')],
-            [Button.inline(t['back'], f'show_plan_{pid}_{sess["qty"] if sess else 1}'.encode())]
+            [Button.inline(t['back'], f'show_plan_{pid}_{sess["qty"] if isinstance(sess, dict) else 1}'.encode())]
         ]
-        await event.edit(details_text, buttons=btn, parse_mode='html')
+        await safe_edit(event, details_text, buttons=btn)
 
     # ========================================================
-    # 7. لوحة تحكم الأدمن الشاملة والمطورة
+    # 7. لوحة تحكم الأدمن الاحترافية (PRO ADMIN PANEL)
     # ========================================================
     elif data == 'admin_panel' and is_admin(uid):
-        await event.answer()
+        await safe_answer(event)
         total_sales = cur.execute("SELECT COUNT(*) FROM orders WHERE status='paid'").fetchone()[0]
-        total_balance = cur.execute("SELECT SUM(balance) FROM wallets").fetchone()[0] or 0
-        total_esims = cur.execute("SELECT SUM(stock) FROM esims").fetchone()[0] or 0
-        total_users = cur.execute("SELECT COUNT(*) FROM users_settings").fetchone()[0] or 0
+        total_rev = cur.execute("SELECT COALESCE(SUM(total_usd), 0) FROM orders WHERE status='paid'").fetchone()[0]
+        total_balance = cur.execute("SELECT COALESCE(SUM(balance), 0) FROM wallets").fetchone()[0]
+        total_esims = cur.execute("SELECT COALESCE(SUM(stock), 0) FROM esims").fetchone()[0]
+        total_users = cur.execute("SELECT COUNT(*) FROM users_settings").fetchone()[0]
+        total_dealers = cur.execute("SELECT COUNT(*) FROM dealer_api_keys").fetchone()[0]
         btn = [
-            [Button.inline("📂 إدارة الأقسام (إضافة/حذف/إخفاء)", b'adm_cats_mgr')],
-            [Button.inline("📦 إدارة وتصفير الشرائح الفردية", b'adm_plans_mgr')],
-            [Button.inline("➕ إضافة شريحة جديدة لقسم", b'adm_plan_add_start')],
-            [Button.inline("💳 إدارة طرق وشبكات الدفع", b'adm_pay_mgr')],
-            [Button.inline("💰 شحن رصيد لعميل", b'admin_add_balance'), Button.inline("📉 خصم رصيد", b'admin_sub_balance')],
+            [Button.inline("إدارة الأقسام", b'adm_cats_mgr'), Button.inline("إدارة الباقات والمخزون", b'adm_plans_mgr_0')],
+            [Button.inline("إضافة شريحة جديدة", b'adm_plan_add_start'), Button.inline("طرق وشبكات الدفع", b'adm_pay_mgr')],
+            [Button.inline("إدارة المستخدمين", b'adm_users_mgr_0'), Button.inline("التجار ومفاتيح API", b'adm_dealers_mgr')],
+            [Button.inline("الطلبات الأخيرة", b'adm_orders_mgr_0'), Button.inline("الإيموجيات المخصصة", b'adm_emojis_mgr')],
+            [Button.inline("شحن رصيد لعميل", b'admin_add_balance'), Button.inline("خصم رصيد", b'admin_sub_balance')],
             [Button.inline("تصفير رصيد عميل", b'admin_zero_balance'), Button.inline("إضافة مخزون عام", b'admin_add_stock')],
             [Button.inline("حظر / فك حظر", b'admin_manage_bans'), Button.inline("إذاعة عامة", b'admin_broadcast_msg')],
             [Button.inline(t['back'], b'main')]
         ]
-        await event.edit(
-            f"{t['admin_panel_title']}\n\n"
-            f"<blockquote>⧺︰ <b>إجمالي المستخدمين:</b> <code>{total_users}</code></blockquote>\n"
-            f"<blockquote>⧺︰ <b>{t['stats_sales']}:</b> <code>{total_sales}</code></blockquote>\n"
-            f"<blockquote>⧺︰ <b>{t['stats_wallets']}:</b> <code>${total_balance:.2f}</code></blockquote>\n"
-            f"<blockquote>⧺︰ <b>{t['stats_esims']}:</b> <code>{total_esims}</code></blockquote>",
-            buttons=btn, parse_mode='html'
+        panel_txt = (
+            f"{UITheme.header(t['admin_panel_title'], 'admin_panel', 'admin')}\n\n"
+            f"<blockquote>"
+            f"{ce('users', 'admin')}<b>المستخدمون:</b> <code>{total_users}</code> | <b>التجار API:</b> <code>{total_dealers}</code>\n"
+            f"{ce('stats', 'admin')}<b>{t['stats_sales']}:</b> <code>{total_sales}</code> (<code>${total_rev:.2f}</code>)\n"
+            f"{ce('wallet', 'wallet')}<b>{t['stats_wallets']}:</b> <code>${total_balance:.2f}</code>\n"
+            f"{ce('stock', 'products')}<b>{t['stats_esims']}:</b> <code>{total_esims}</code>"
+            f"</blockquote>"
         )
+        await safe_edit(event, panel_txt, buttons=btn)
+
+    # ------------------ إدارة الإيموجيات المخصصة ------------------
+    elif data == 'adm_emojis_mgr' and is_admin(uid):
+        await safe_answer(event)
+        btn = []
+        row = []
+        for cat in DEFAULT_CUSTOM_EMOJI_SCHEMA:
+            lbl = CATEGORY_LABELS_AR.get(cat, cat)
+            cnt_set = sum(1 for v in emoji_mgr.data.get(cat, {}).values() if v)
+            tot_k = len(emoji_mgr.data.get(cat, {}))
+            row.append(Button.inline(f"{lbl} ({cnt_set}/{tot_k})", f"adm_emo_cat_{cat}".encode()))
+            if len(row) == 2:
+                btn.append(row)
+                row = []
+        if row:
+            btn.append(row)
+        btn.append([Button.inline(t['back'], b'admin_panel')])
+        await safe_edit(
+            event,
+            UITheme.header("إدارة الإيموجيات المخصصة (Custom Emojis)", "settings", "settings") + "\n\n<blockquote>اختر التصنيف لإضافة أو تعديل أو اختبار معرفات Telegram Premium Custom Emoji الحقيقية:</blockquote>",
+            buttons=btn
+        )
+
+    elif data.startswith('adm_emo_cat_') and is_admin(uid):
+        await safe_answer(event)
+        cat = data.replace('adm_emo_cat_', '')
+        keys = emoji_mgr.data.get(cat, {})
+        lbl = CATEGORY_LABELS_AR.get(cat, cat)
+        txt = f"{UITheme.header(f'تصنيف الإيموجيات: {lbl}', 'settings', 'settings')}\n\n"
+        btn = []
+        for k, eid in keys.items():
+            status = "مفعل" if eid else "فارغ"
+            txt += f"• <code>{k}</code>: {ce(k, cat)}<code>{eid if eid else 'غير محدد'}</code>\n"
+            btn.append([Button.inline(f"{k} [{status}]", f"adm_emo_set_{cat}|{k}".encode())])
+        btn.append([Button.inline(t['back'], b'adm_emojis_mgr')])
+        await safe_edit(event, txt, buttons=btn)
+
+    elif data.startswith('adm_emo_set_') and is_admin(uid):
+        await safe_answer(event)
+        payload = data.replace('adm_emo_set_', '')
+        cat, k = payload.split('|', 1)
+        SessionManager.set(uid, f'adm_emo_input_{uid}', {"cat": cat, "key": k})
+        cur_id = emoji_mgr.get_id(k, cat)
+        await safe_edit(
+            event,
+            UITheme.header(f"تعيين معرف: {k}", "settings", "settings") + f"\n\n<blockquote>المعرف الحالي: <code>{cur_id or 'فارغ'}</code>\nأرسل رقم Custom Emoji ID الصحيح الآن، أو أرسل <code>clear</code> لمسحه:</blockquote>",
+            buttons=[[Button.inline(t['back'], f'adm_emo_cat_{cat}'.encode())]]
+        )
+
+    # ------------------ إدارة المستخدمين ------------------
+    elif data.startswith('adm_users_mgr_') and is_admin(uid):
+        await safe_answer(event)
+        page = int(data.split('_')[3])
+        per_page = 8
+        total = cur.execute("SELECT COUNT(*) FROM users_settings").fetchone()[0]
+        total_pages = max(1, (total + per_page - 1) // per_page)
+        page = max(0, min(page, total_pages - 1))
+        rows = cur.execute(
+            "SELECT u.user_id, u.lang, COALESCE(w.balance, 0) FROM users_settings u LEFT JOIN wallets w ON u.user_id=w.user_id ORDER BY u.user_id DESC LIMIT ? OFFSET ?",
+            (per_page, page * per_page)
+        ).fetchall()
+        txt = f"{UITheme.header(f'إدارة المستخدمين ({total})', 'users', 'admin')}\n\n"
+        btn = []
+        for u_id, u_lang, u_bal in rows:
+            banned_lbl = " [محظور]" if is_banned(u_id) else ""
+            btn.append([Button.inline(f"ID: {u_id} | ${u_bal:.2f} | {u_lang}{banned_lbl}", f"adm_user_det_{u_id}".encode())])
+        nav = []
+        if page > 0:
+            nav.append(Button.inline(t['prev_page'], f'adm_users_mgr_{page-1}'.encode()))
+        nav.append(Button.inline(f"{page+1}/{total_pages}", b'noop'))
+        if page + 1 < total_pages:
+            nav.append(Button.inline(t['next_page'], f'adm_users_mgr_{page+1}'.encode()))
+        if total_pages > 1:
+            btn.append(nav)
+        btn.append([Button.inline("بحث برقم الآيدي", b'adm_user_search'), Button.inline(t['back'], b'admin_panel')])
+        await safe_edit(event, txt, buttons=btn)
+
+    elif data == 'adm_user_search' and is_admin(uid):
+        await safe_answer(event)
+        SessionManager.set(uid, f'adm_user_search_{uid}', True)
+        await safe_edit(event, UITheme.header("بحث عن مستخدم", "users", "admin") + "\n\n<blockquote>أرسل رقم آيدي المستخدم (User ID):</blockquote>", buttons=[[Button.inline(t['back'], b'adm_users_mgr_0')]])
+
+    elif data.startswith('adm_user_det_') and is_admin(uid):
+        await safe_answer(event)
+        tid = int(data.split('_')[3])
+        bal = get_wallet_balance(tid)
+        ord_cnt = cur.execute("SELECT COUNT(*), COALESCE(SUM(total_usd), 0) FROM orders WHERE user_id=? AND status='paid'", (tid,)).fetchone()
+        mem = get_membership_info(tid, 'ar')
+        ban_st = "محظور" if is_banned(tid) else "نشط"
+        txt = (
+            f"{UITheme.header(f'ملف المستخدم: {tid}', 'users', 'admin')}\n\n"
+            f"<blockquote>• <b>الحالة:</b> <b>{ban_st}</b>\n"
+            f"• <b>العضوية:</b> <b>{mem['tier']}</b>\n"
+            f"• <b>الرصيد:</b> <code>${bal:.2f}</code>\n"
+            f"• <b>الطلبات:</b> <code>{ord_cnt[0]}</code> (<code>${ord_cnt[1]:.2f}</code>)</blockquote>"
+        )
+        btn = [
+            [Button.inline("تبديل الحظر", f"adm_user_toggle_ban_{tid}".encode())],
+            [Button.inline(t['back'], b'adm_users_mgr_0')]
+        ]
+        await safe_edit(event, txt, buttons=btn)
+
+    elif data.startswith('adm_user_toggle_ban_') and is_admin(uid):
+        tid = int(data.split('_')[4])
+        if tid == DEV_ID:
+            return await safe_answer(event, "لا يمكن حظر المطور الأساسي.", alert=True)
+        if is_banned(tid):
+            cur.execute("DELETE FROM bans WHERE user_id=?", (tid,))
+            ban_cache.pop(tid, None)
+            msg = "تم فك الحظر بنجاح."
+        else:
+            cur.execute("INSERT OR REPLACE INTO bans (user_id) VALUES (?)", (tid,))
+            ban_cache[tid] = True
+            msg = "تم حظر المستخدم بنجاح."
+        conn.commit()
+        await safe_answer(event, msg, alert=True)
+        event.data = f"adm_user_det_{tid}".encode()
+        await callback(event)
+
+    elif data == 'adm_dealers_mgr' and is_admin(uid):
+        await safe_answer(event)
+        rows = cur.execute("SELECT user_id, api_key, created_date FROM dealer_api_keys ORDER BY id DESC LIMIT 20").fetchall()
+        txt = f"{UITheme.header(f'التجار ومفاتيح API ({len(rows)})', 'dealer', 'dealers')}\n\n"
+        if not rows:
+            txt += "<blockquote>لا يوجد تجار API مسجلين حالياً.</blockquote>"
+        else:
+            for d_uid, d_key, d_dt in rows:
+                txt += f"<blockquote>• <b>الآيدي:</b> <code>{d_uid}</code>\n  المفتاح: <code>{d_key[:14]}...</code> | {d_dt}</blockquote>\n"
+        await safe_edit(event, txt, buttons=[[Button.inline(t['back'], b'admin_panel')]])
+
+    elif data.startswith('adm_orders_mgr_') and is_admin(uid):
+        await safe_answer(event)
+        page = int(data.split('_')[3])
+        per_page = 8
+        total = cur.execute("SELECT COUNT(*) FROM orders").fetchone()[0]
+        total_pages = max(1, (total + per_page - 1) // per_page)
+        page = max(0, min(page, total_pages - 1))
+        rows = cur.execute("SELECT o.order_id, o.user_id, e.name, o.quantity, o.total_usd, o.status, o.created_date FROM orders o LEFT JOIN esims e ON o.esim_id=e.id ORDER BY o.created_date DESC LIMIT ? OFFSET ?", (per_page, page * per_page)).fetchall()
+        txt = f"{UITheme.header(f'إدارة الطلبات ({total})', 'orders', 'orders')}\n\n"
+        if not rows:
+            txt += "<blockquote>لا توجد طلبات مسجلة.</blockquote>"
+        else:
+            for oid, u_id, ename, qty, tot, st_o, dt in rows:
+                txt += f"<blockquote>• <b>#{oid}</b> | عميل: <code>{u_id}</code>\n  {qty}x {ename} | <code>${tot:.2f}</code> | {st_o} | {dt}</blockquote>\n"
+        btn = []
+        if total_pages > 1:
+            nav = []
+            if page > 0:
+                nav.append(Button.inline(t['prev_page'], f'adm_orders_mgr_{page-1}'.encode()))
+            nav.append(Button.inline(f"{page+1}/{total_pages}", b'noop'))
+            if page + 1 < total_pages:
+                nav.append(Button.inline(t['next_page'], f'adm_orders_mgr_{page+1}'.encode()))
+            btn.append(nav)
+        btn.append([Button.inline(t['back'], b'admin_panel')])
+        await safe_edit(event, txt, buttons=btn)
 
     # ------------------ إدارة الأقسام ------------------
     elif data == 'adm_cats_mgr' and is_admin(uid):
-        await event.answer()
+        await safe_answer(event)
         cats = cur.execute("SELECT slug, name_ar, is_visible FROM categories").fetchall()
-        txt = "<blockquote>📂 <b>إدارة الأقسام (إخفاء / إظهار / حذف / إضافة):</b></blockquote>\n\n"
+        txt = f"{UITheme.header('إدارة الأقسام (إخفاء / إظهار / حذف / إضافة)', 'categories', 'admin')}\n\n"
         btn = []
         for slug, nar, vis in cats:
-            status_icon = "👁️ ظاهر" if vis == 1 else "🙈 مخفي"
-            btn.append([Button.inline(f"{nar} ({status_icon})", f"adm_cat_det_{slug}".encode())])
-        
-        btn.append([Button.inline("➕ إضافة قسم جديد", b'adm_cat_add')])
+            status_lbl = "ظاهر" if vis == 1 else "مخفي"
+            btn.append([Button.inline(f"{nar} [{status_lbl}]", f"adm_cat_det_{slug}".encode())])
+        btn.append([Button.inline("إضافة قسم جديد", b'adm_cat_add')])
         btn.append([Button.inline(t['back'], b'admin_panel')])
-        await event.edit(txt, buttons=btn, parse_mode='html')
+        await safe_edit(event, txt, buttons=btn)
 
     elif data.startswith('adm_cat_det_') and is_admin(uid):
-        await event.answer()
+        await safe_answer(event)
         slug = data.replace('adm_cat_det_', '')
         cat = cur.execute("SELECT name_ar, is_visible FROM categories WHERE slug=?", (slug,)).fetchone()
-        if not cat: return
+        if not cat:
+            return
         nar, vis = cat
         toggle_label = "إخفاء القسم عن المستخدمين" if vis == 1 else "إظهار القسم للمستخدمين"
         btn = [
             [Button.inline(toggle_label, f"adm_cat_toggle_{slug}".encode())],
-            [Button.inline("🗑️ حذف القسم مع شرائحه", f"adm_cat_delete_{slug}".encode())],
+            [Button.inline("حذف القسم مع شرائحه", f"adm_cat_del_confirm_{slug}".encode())],
             [Button.inline(t['back'], b'adm_cats_mgr')]
         ]
-        await event.edit(f"<blockquote>📂 <b>إدارة القسم: {nar}</b>\nالحالة الحالية: <b>{'ظاهر' if vis==1 else 'مخفي'}</b></blockquote>", buttons=btn, parse_mode='html')
+        await safe_edit(event, f"{UITheme.header(f'إدارة القسم: {nar}', 'categories', 'admin')}\n\n<blockquote>الحالة الحالية: <b>{'ظاهر' if vis==1 else 'مخفي'}</b></blockquote>", buttons=btn)
 
     elif data.startswith('adm_cat_toggle_') and is_admin(uid):
-        await event.answer()
         slug = data.replace('adm_cat_toggle_', '')
         cur.execute("UPDATE categories SET is_visible = CASE WHEN is_visible=1 THEN 0 ELSE 1 END WHERE slug=?", (slug,))
         conn.commit()
-        await event.answer("تم تبديل حالة القسم بنجاح!", alert=True)
+        await safe_answer(event, "تم تبديل حالة القسم بنجاح.", alert=True)
         event.data = f"adm_cat_det_{slug}".encode()
         await callback(event)
 
+    elif data.startswith('adm_cat_del_confirm_') and is_admin(uid):
+        await safe_answer(event)
+        slug = data.replace('adm_cat_del_confirm_', '')
+        btn = [
+            [Button.inline("تأكيد الحذف النهائي", f"adm_cat_delete_{slug}".encode())],
+            [Button.inline("إلغاء", f"adm_cat_det_{slug}".encode())]
+        ]
+        await safe_edit(event, UITheme.warning("تأكيد حذف القسم", f"هل أنت متأكد من حذف القسم <code>{slug}</code> وكافة شرائحه؟"), buttons=btn)
+
     elif data.startswith('adm_cat_delete_') and is_admin(uid):
-        await event.answer()
         slug = data.replace('adm_cat_delete_', '')
         cur.execute("DELETE FROM categories WHERE slug=?", (slug,))
         cur.execute("DELETE FROM esims WHERE category=?", (slug,))
         conn.commit()
-        await event.answer("تم حذف القسم وكافة شرائحه بنجاح!", alert=True)
+        await safe_answer(event, "تم حذف القسم وكافة شرائحه بنجاح.", alert=True)
         event.data = b'adm_cats_mgr'
         await callback(event)
 
     elif data == 'adm_cat_add' and is_admin(uid):
-        await event.answer()
+        await safe_answer(event)
         SessionManager.set(uid, f'adm_new_cat_{uid}', True)
-        await event.edit("أرسل بيانات القسم الجديد بالصيغة:\n<code>المعرف(slug) | اسم القسم بالعربي | Name in English</code>\n\nمثال:\n<code>zain | باقات زين الدولية | Zain Plans</code>", buttons=[[Button.inline(t['back'], b'adm_cats_mgr')]], parse_mode='html')
+        await safe_edit(event, "<blockquote>أرسل بيانات القسم الجديد بالصيغة:\n<code>المعرف(slug) | اسم القسم بالعربي | Name in English</code>\n\nمثال:\n<code>zain | باقات زين الدولية | Zain Plans</code></blockquote>", buttons=[[Button.inline(t['back'], b'adm_cats_mgr')]])
 
-    # ------------------ إضافة شريحة جديدة ------------------
+    # ------------------ إضافة وإدارة الشرائح ------------------
     elif data == 'adm_plan_add_start' and is_admin(uid):
-        await event.answer()
+        await safe_answer(event)
         cats = cur.execute("SELECT slug, name_ar FROM categories").fetchall()
         cats_list_str = "\n".join([f"• <code>{s}</code> ({n})" for s, n in cats])
         SessionManager.set(uid, f'adm_add_plan_input_{uid}', True)
-        msg_input = f"""<blockquote>➕ <b>إضافة شريحة جديدة لقسم معين:</b>
-الأقسام المتاحة حالياً:
-{cats_list_str}
+        msg_input = (
+            f"{UITheme.header('إضافة شريحة جديدة لقسم معين', 'product', 'products')}\n\n"
+            f"<blockquote>الأقسام المتاحة حالياً:\n{cats_list_str}\n\n"
+            f"أرسل البيانات بسطر واحد بالصيغة التالية:\n"
+            f"<code>المعرف(slug) | اسم الشريحة | السعر | الدقائق | الشهور | المخزون | جملة(1 أو 0) | الوصف</code></blockquote>"
+        )
+        await safe_edit(event, msg_input, buttons=[[Button.inline(t['back'], b'admin_panel')]])
 
-أرسل البيانات بسطر واحد بالصيغة التالية:
-<code>المعرف(slug) | اسم الشريحة | السعر | الدقائق | الشهور | المخزون | جملة(1 أو 0) | الوصف</code>
-
-مثال:
-<code>vodafone | باقة الصيف 50GB | 25 | 1000 | 1 | 500 | 0 | باقة مميزة للمسافرين</code></blockquote>"""
-        await event.edit(msg_input, buttons=[[Button.inline(t['back'], b'admin_panel')]], parse_mode='html')
-
-    # ------------------ إدارة وتصفير الشرائح الفردية ------------------
-    elif data == 'adm_plans_mgr' and is_admin(uid):
-        await event.answer()
-        plans = cur.execute("SELECT id, name, price_usd, stock FROM esims LIMIT 25").fetchall()
-        txt = "<blockquote>📦 <b>إدارة الشرائح والمخزون الفردي:</b>\nاختر شريحة لتصفيرها أو تعديل سعرها ومخزونها:</blockquote>\n\n"
+    elif (data == 'adm_plans_mgr' or data.startswith('adm_plans_mgr_')) and is_admin(uid):
+        await safe_answer(event)
+        page = int(data.split('_')[3]) if data.startswith('adm_plans_mgr_') else 0
+        per_page = 10
+        total = cur.execute("SELECT COUNT(*) FROM esims").fetchone()[0]
+        total_pages = max(1, (total + per_page - 1) // per_page)
+        page = max(0, min(page, total_pages - 1))
+        plans = cur.execute("SELECT id, name, price_usd, stock FROM esims ORDER BY id ASC LIMIT ? OFFSET ?", (per_page, page * per_page)).fetchall()
+        txt = f"{UITheme.header(f'إدارة الشرائح والمخزون ({total})', 'stock', 'products')}\n\n<blockquote>اختر شريحة لتعديل سعرها أو مخزونها أو تصفيرها:</blockquote>"
         btn = []
         for pid, name, pr, st in plans:
             btn.append([Button.inline(f"{name} | ${pr:.0f} | متبقي: {st}", f"adm_plan_det_{pid}".encode())])
-        
+        if total_pages > 1:
+            nav = []
+            if page > 0:
+                nav.append(Button.inline(t['prev_page'], f'adm_plans_mgr_{page-1}'.encode()))
+            nav.append(Button.inline(f"{page+1}/{total_pages}", b'noop'))
+            if page + 1 < total_pages:
+                nav.append(Button.inline(t['next_page'], f'adm_plans_mgr_{page+1}'.encode()))
+            btn.append(nav)
         btn.append([Button.inline(t['back'], b'admin_panel')])
-        await event.edit(txt, buttons=btn, parse_mode='html')
+        await safe_edit(event, txt, buttons=btn)
 
     elif data.startswith('adm_plan_det_') and is_admin(uid):
-        await event.answer()
+        await safe_answer(event)
         pid = int(data.split('_')[3])
         plan = cur.execute("SELECT id, name, price_usd, stock, minutes, months FROM esims WHERE id=?", (pid,)).fetchone()
-        if not plan: return
+        if not plan:
+            return
         esim_id, name, pr, st, mins, mo = plan
         SessionManager.set(uid, f'target_plan_id_{uid}', pid)
-        
-        info = f"""<blockquote>📦 <b>إدارة الشريحة: {name}</b>
-• <b>المدة:</b> <code>{mo} شهر</code>
-• <b>الدقائق:</b> <code>{mins} دقيقة</code>
-• <b>السعر:</b> <code>${pr:.2f}</code>
-• <b>المخزون الحالي:</b> <code>{st} قطعة</code></blockquote>"""
-
+        info = (
+            f"{UITheme.header(f'إدارة الشريحة: {name}', 'product', 'products')}\n\n"
+            f"<blockquote>• <b>المدة:</b> <code>{mo} شهر</code>\n"
+            f"• <b>الدقائق:</b> <code>{mins} دقيقة</code>\n"
+            f"• <b>السعر:</b> <code>${pr:.2f}</code>\n"
+            f"• <b>المخزون الحالي:</b> <code>{st} قطعة</code></blockquote>"
+        )
         btn = [
-            [Button.inline("🚫 تصفير مخزون الشريحة (نفاد المخزون)", f"adm_plan_zero_{pid}".encode())],
-            [Button.inline("✏️ تعديل السعر", b'adm_edit_plan_price'), Button.inline("📦 تعبئة المخزون", b'adm_edit_plan_stock')],
-            [Button.inline("🗑️ حذف هذه الشريحة نهائياً", f"adm_plan_delete_{pid}".encode())],
-            [Button.inline(t['back'], b'adm_plans_mgr')]
+            [Button.inline("تصفير مخزون الشريحة", f"adm_plan_zero_{pid}".encode())],
+            [Button.inline("تعديل السعر", b'adm_edit_plan_price'), Button.inline("تعديل المخزون", b'adm_edit_plan_stock')],
+            [Button.inline("حذف الشريحة نهائياً", f"adm_plan_del_confirm_{pid}".encode())],
+            [Button.inline(t['back'], b'adm_plans_mgr_0')]
         ]
-        await event.edit(info, buttons=btn, parse_mode='html')
+        await safe_edit(event, info, buttons=btn)
 
     elif data.startswith('adm_plan_zero_') and is_admin(uid):
-        await event.answer()
         pid = int(data.split('_')[3])
         cur.execute("UPDATE esims SET stock = 0 WHERE id=?", (pid,))
         conn.commit()
-        await event.answer("تم تصفير مخزون الشريحة وأصبحت غير متاحة للشراء!", alert=True)
+        await safe_answer(event, "تم تصفير مخزون الشريحة بنجاح.", alert=True)
         event.data = f"adm_plan_det_{pid}".encode()
         await callback(event)
 
+    elif data.startswith('adm_plan_del_confirm_') and is_admin(uid):
+        await safe_answer(event)
+        pid = int(data.split('_')[4])
+        btn = [
+            [Button.inline("تأكيد الحذف النهائي", f"adm_plan_delete_{pid}".encode())],
+            [Button.inline("إلغاء", f"adm_plan_det_{pid}".encode())]
+        ]
+        await safe_edit(event, UITheme.warning("تأكيد حذف الشريحة", "هل أنت متأكد من حذف هذه الشريحة نهائياً؟"), buttons=btn)
+
     elif data.startswith('adm_plan_delete_') and is_admin(uid):
-        await event.answer()
         pid = int(data.split('_')[3])
         cur.execute("DELETE FROM esims WHERE id=?", (pid,))
         conn.commit()
-        await event.answer("تم حذف الشريحة نهائياً!", alert=True)
-        event.data = b'adm_plans_mgr'
+        await safe_answer(event, "تم حذف الشريحة نهائياً.", alert=True)
+        event.data = b'adm_plans_mgr_0'
         await callback(event)
 
     elif data == 'adm_edit_plan_price' and is_admin(uid):
-        await event.answer()
+        await safe_answer(event)
         SessionManager.set(uid, f'action_plan_price_{uid}', True)
-        await event.edit("أرسل السعر الجديد بالدولار لهذه الشريحة (مثال: <code>25.5</code>):", buttons=[[Button.inline(t['back'], b'adm_plans_mgr')]], parse_mode='html')
+        await safe_edit(event, "<blockquote>أرسل السعر الجديد بالدولار لهذه الشريحة (مثال: <code>25.5</code>):</blockquote>", buttons=[[Button.inline(t['back'], b'adm_plans_mgr_0')]])
 
     elif data == 'adm_edit_plan_stock' and is_admin(uid):
-        await event.answer()
+        await safe_answer(event)
         SessionManager.set(uid, f'action_plan_stock_{uid}', True)
-        await event.edit("أرسل كمية المخزون الجديدة للشريحة (مثال: <code>100</code>):", buttons=[[Button.inline(t['back'], b'adm_plans_mgr')]], parse_mode='html')
+        await safe_edit(event, "<blockquote>أرسل كمية المخزون الجديدة للشريحة (مثال: <code>100</code>):</blockquote>", buttons=[[Button.inline(t['back'], b'adm_plans_mgr_0')]])
 
     # ------------------ إدارة طرق وشبكات الدفع ------------------
     elif data == 'adm_pay_mgr' and is_admin(uid):
-        await event.answer()
+        await safe_answer(event)
         nets = cur.execute("SELECT network_key, network_name, address, binance_id FROM binance_networks").fetchall()
-        txt = "<blockquote>💳 <b>إدارة طرق وعناوين وشبكات الدفع:</b>\nاختر وسيلة لتعديلها أو حذفها، أو أضف وسيلة جديدة:</blockquote>\n\n"
+        txt = f"{UITheme.header('إدارة طرق وشبكات الدفع', 'payment', 'payments')}\n\n<blockquote>اختر وسيلة لتعديلها أو حذفها، أو أضف وسيلة جديدة:</blockquote>"
         btn = []
         for k, name, addr, bid in nets:
-            val = bid if bid else (addr[:12] + "...")
+            val = bid if bid else ((addr[:12] + "...") if addr else "غير محدد")
             btn.append([Button.inline(f"{name} ({val})", f"adm_pay_det_{k}".encode())])
-        
-        btn.append([Button.inline("➕ إضافة شبكة/وسيلة دفع جديدة", b'adm_pay_add')])
+        btn.append([Button.inline("إضافة وسيلة دفع جديدة", b'adm_pay_add')])
         btn.append([Button.inline(t['back'], b'admin_panel')])
-        await event.edit(txt, buttons=btn, parse_mode='html')
+        await safe_edit(event, txt, buttons=btn)
 
     elif data.startswith('adm_pay_det_') and is_admin(uid):
-        await event.answer()
+        await safe_answer(event)
         key = data.replace('adm_pay_det_', '')
         net = cur.execute("SELECT network_key, network_name, address, binance_id FROM binance_networks WHERE network_key=?", (key,)).fetchone()
-        if not net: return
+        if not net:
+            return
         k, name, addr, bid = net
         SessionManager.set(uid, f'target_pay_key_{uid}', k)
-        info = f"""<blockquote>💳 <b>تعديل طريقة الدفع:</b>
-• الاسم: <b>{name}</b>
-• العنوان: <code>{addr if addr else 'غير محدد'}</code>
-• ID / Pay ID: <code>{bid if bid else 'غير محدد'}</code></blockquote>"""
+        info = (
+            f"{UITheme.header(f'تعديل طريقة الدفع: {name}', 'payment', 'payments')}\n\n"
+            f"<blockquote>• <b>العنوان:</b> <code>{addr if addr else 'غير محدد'}</code>\n"
+            f"• <b>ID / Pay ID:</b> <code>{bid if bid else 'غير محدد'}</code></blockquote>"
+        )
         btn = [
             [Button.inline("تعديل العنوان", b'adm_pay_set_addr'), Button.inline("تعديل الـ ID", b'adm_pay_set_id')],
-            [Button.inline("🗑️ حذف وسيلة الدفع", f"adm_pay_delete_{k}".encode())],
+            [Button.inline("حذف وسيلة الدفع", f"adm_pay_del_confirm_{k}".encode())],
             [Button.inline(t['back'], b'adm_pay_mgr')]
         ]
-        await event.edit(info, buttons=btn, parse_mode='html')
+        await safe_edit(event, info, buttons=btn)
+
+    elif data.startswith('adm_pay_del_confirm_') and is_admin(uid):
+        await safe_answer(event)
+        key = data.replace('adm_pay_del_confirm_', '')
+        btn = [
+            [Button.inline("تأكيد الحذف", f"adm_pay_delete_{key}".encode())],
+            [Button.inline("إلغاء", f"adm_pay_det_{key}".encode())]
+        ]
+        await safe_edit(event, UITheme.warning("تأكيد حذف وسيلة الدفع", f"هل أنت متأكد من حذف وسيلة الدفع <code>{key}</code>؟"), buttons=btn)
 
     elif data.startswith('adm_pay_delete_') and is_admin(uid):
-        await event.answer()
         key = data.replace('adm_pay_delete_', '')
         cur.execute("DELETE FROM binance_networks WHERE network_key=?", (key,))
         conn.commit()
-        await event.answer("تم حذف وسيلة الدفع بنجاح!", alert=True)
+        await safe_answer(event, "تم حذف وسيلة الدفع بنجاح.", alert=True)
         event.data = b'adm_pay_mgr'
         await callback(event)
 
     elif data == 'adm_pay_set_addr' and is_admin(uid):
-        await event.answer()
+        await safe_answer(event)
         SessionManager.set(uid, f'adm_pay_set_addr_{uid}', True)
-        await event.edit("أرسل العنوان الجديد (Wallet Address):", buttons=[[Button.inline(t['back'], b'adm_pay_mgr')]], parse_mode='html')
+        await safe_edit(event, "<blockquote>أرسل العنوان الجديد (Wallet Address):</blockquote>", buttons=[[Button.inline(t['back'], b'adm_pay_mgr')]])
 
     elif data == 'adm_pay_set_id' and is_admin(uid):
-        await event.answer()
+        await safe_answer(event)
         SessionManager.set(uid, f'adm_pay_set_id_{uid}', True)
-        await event.edit("أرسل الـ ID الجديد (Binance/Pay ID):", buttons=[[Button.inline(t['back'], b'adm_pay_mgr')]], parse_mode='html')
+        await safe_edit(event, "<blockquote>أرسل الـ ID الجديد (Binance / Bybit / Pay ID):</blockquote>", buttons=[[Button.inline(t['back'], b'adm_pay_mgr')]])
 
     elif data == 'adm_pay_add' and is_admin(uid):
-        await event.answer()
+        await safe_answer(event)
         SessionManager.set(uid, f'adm_new_pay_{uid}', True)
-        await event.edit("أرسل وسيلة الدفع الجديدة بالصيغة:\n<code>اسم الشبكة | العنوان أو المحفظة | ID المنصة (اختياري)</code>\n\nمثال:\n<code>USDT (Polygon) | 0x334c55fe51757ac... | </code>", buttons=[[Button.inline(t['back'], b'adm_pay_mgr')]], parse_mode='html')
+        await safe_edit(event, "<blockquote>أرسل وسيلة الدفع الجديدة بالصيغة:\n<code>اسم الشبكة | العنوان أو المحفظة | ID المنصة (اختياري)</code></blockquote>", buttons=[[Button.inline(t['back'], b'adm_pay_mgr')]])
 
-    # ------------------ الرصيد والمخزون والإذاعة ------------------
+    # ------------------ الرصيد والمخزون والإذاعة وقبول الإيصالات ------------------
     elif data == 'admin_add_balance' and is_admin(uid):
-        await event.answer()
+        await safe_answer(event)
         SessionManager.set(uid, f'add_balance_{uid}', True)
-        await event.edit("أرسل آيدي العميل ثم المبلغ (مثال: <code>123456789 50</code>):", buttons=[[Button.inline(t['back'], b'admin_panel')]], parse_mode='html')
+        await safe_edit(event, "<blockquote>أرسل آيدي العميل ثم المبلغ (مثال: <code>123456789 50</code>):</blockquote>", buttons=[[Button.inline(t['back'], b'admin_panel')]])
 
     elif data == 'admin_sub_balance' and is_admin(uid):
-        await event.answer()
+        await safe_answer(event)
         SessionManager.set(uid, f'sub_balance_{uid}', True)
-        await event.edit("أرسل آيدي العميل ثم المبلغ (مثال: <code>123456789 20</code>):", buttons=[[Button.inline(t['back'], b'admin_panel')]], parse_mode='html')
+        await safe_edit(event, "<blockquote>أرسل آيدي العميل ثم المبلغ (مثال: <code>123456789 20</code>):</blockquote>", buttons=[[Button.inline(t['back'], b'admin_panel')]])
 
     elif data == 'admin_zero_balance' and is_admin(uid):
-        await event.answer()
+        await safe_answer(event)
         SessionManager.set(uid, f'zero_balance_{uid}', True)
-        await event.edit("أرسل آيدي العميل لتصفير محفظته:", buttons=[[Button.inline(t['back'], b'admin_panel')]], parse_mode='html')
+        await safe_edit(event, "<blockquote>أرسل آيدي العميل لتصفير محفظته:</blockquote>", buttons=[[Button.inline(t['back'], b'admin_panel')]])
 
     elif data == 'admin_add_stock' and is_admin(uid):
-        await event.answer()
+        await safe_answer(event)
         SessionManager.set(uid, f'add_stock_{uid}', True)
-        await event.edit("أرسل الكمية المراد إضافتها لجميع الشرائح:", buttons=[[Button.inline(t['back'], b'admin_panel')]], parse_mode='html')
+        await safe_edit(event, "<blockquote>أرسل الكمية المراد إضافتها لجميع الشرائح:</blockquote>", buttons=[[Button.inline(t['back'], b'admin_panel')]])
 
     elif data == 'admin_manage_bans' and is_admin(uid):
-        await event.answer()
+        await safe_answer(event)
         SessionManager.set(uid, f'manage_bans_{uid}', True)
-        await event.edit("أرسل آيدي المستخدم لحظر / فك حظره:", buttons=[[Button.inline(t['back'], b'admin_panel')]], parse_mode='html')
+        await safe_edit(event, "<blockquote>أرسل آيدي المستخدم لحظر / فك حظره:</blockquote>", buttons=[[Button.inline(t['back'], b'admin_panel')]])
 
     elif data == 'admin_broadcast_msg' and is_admin(uid):
-        await event.answer()
+        await safe_answer(event)
         SessionManager.set(uid, f'broadcast_{uid}', True)
-        await event.edit("أرسل الرسالة المراد إذاعتها لجميع المستخدمين:", buttons=[[Button.inline(t['back'], b'admin_panel')]], parse_mode='html')
+        await safe_edit(event, "<blockquote>أرسل الرسالة المراد إذاعتها لجميع المستخدمين:</blockquote>", buttons=[[Button.inline(t['back'], b'admin_panel')]])
 
     elif data.startswith('admin_approve_dep_') and is_admin(uid):
-        await event.answer()
+        await safe_answer(event)
         parts = data.split('_')
         target_uid = int(parts[3])
         dep_amount = float(parts[4])
         update_wallet(target_uid, dep_amount, 'admin_deposit', f"شحن إيصال مقبول بقيمة ${dep_amount}")
         try:
-            await client.send_message(target_uid, f"<blockquote>✅ <b>تم قبول إيصال الدفع وإضافة ${dep_amount:.2f} إلى محفظتك!</b></blockquote>", parse_mode='html')
-        except: pass
-        await event.edit(f"تم قبول الطلب وشحن ${dep_amount:.2f} للمستخدم {target_uid}.", buttons=[[Button.inline("لوحة التحكم", b'admin_panel')]], parse_mode='html')
+            await safe_send(target_uid, UITheme.success("تم قبول إيصال الدفع", f"تمت إضافة مبلغ <code>${dep_amount:.2f}</code> إلى محفظتك بنجاح."))
+        except Exception:
+            pass
+        await safe_edit(event, UITheme.success("تم شحن المحفظة", f"تم قبول الطلب وشحن <code>${dep_amount:.2f}</code> للمستخدم <code>{target_uid}</code>."), buttons=[[Button.inline("لوحة التحكم", b'admin_panel')]])
 
     elif data.startswith('admin_reject_dep_') and is_admin(uid):
-        await event.answer()
+        await safe_answer(event)
         parts = data.split('_')
         target_uid = int(parts[3])
         try:
-            await client.send_message(target_uid, "<blockquote>❌ <b>عذراً، تم رفض إيصال الدفع. يرجى التواصل مع الدعم.</b></blockquote>", parse_mode='html')
-        except: pass
-        await event.edit("تم رفض الإيصال وإبلاغ المستخدم.", buttons=[[Button.inline("لوحة التحكم", b'admin_panel')]], parse_mode='html')
+            await safe_send(target_uid, UITheme.error("تم رفض إيصال الدفع", "عذراً، لم يتم قبول الإيصال المرسل. يرجى التواصل مع الدعم الفني."))
+        except Exception:
+            pass
+        await safe_edit(event, UITheme.warning("تم رفض الإيصال", "تم رفض الإيصال وإبلاغ المستخدم."), buttons=[[Button.inline("لوحة التحكم", b'admin_panel')]])
+
 
 # ==========================================
 # 8. معالجة الرسائل والمدخلات
@@ -1608,7 +2576,8 @@ async def callback(event):
 @client.on(events.NewMessage)
 async def handler(event):
     uid = event.sender_id
-    if is_banned(uid) or (event.text and event.text.startswith('/')): return
+    if is_banned(uid) or (event.text and event.text.startswith('/')):
+        return
 
     now = time.time()
     if uid in user_rate_limits and now - user_rate_limits[uid] < 0.3:
@@ -1619,60 +2588,112 @@ async def handler(event):
     lang = get_user_lang(uid) or 'ar'
     t = LANGS.get(lang, LANGS['ar'])
 
+    # البحث عن الباقات
+    if SessionManager.has(uid, f'search_plans_{uid}'):
+        SessionManager.remove(uid, f'search_plans_{uid}')
+        q = text.lower()
+        rows = cur.execute("SELECT id, name, price_usd, stock FROM esims WHERE LOWER(name) LIKE ? OR LOWER(description) LIKE ? OR LOWER(category) LIKE ? LIMIT 15", (f"%{q}%", f"%{q}%", f"%{q}%")).fetchall()
+        if not rows:
+            return await safe_reply(event, UITheme.warning("لا توجد نتائج", f"لم يتم العثور على باقات مطابقة لـ <code>{text}</code>."), buttons=[[Button.inline(t['back'], b'personal_section')]])
+        btn = [[Button.inline(f"{nm} — ${pr:.0f} (المتاح: {st})", f"show_plan_{pid}_1".encode())] for pid, nm, pr, st in rows]
+        btn.append([Button.inline(t['back'], b'personal_section')])
+        await safe_reply(event, UITheme.header(f"نتائج البحث عن: {text}", "product", "products"), buttons=btn)
+        return
+
+    # البحث عن دولة للباقة
+    elif SessionManager.has(uid, f'search_country_for_{uid}'):
+        pid = SessionManager.pop(uid, f'search_country_for_{uid}')
+        q = text.lower().strip()
+        canonical = COUNTRY_ALIASES.get(q, text)
+        matches = [c for c in COUNTRIES_DATA if q in c['name'].lower() or canonical.lower() in c['name'].lower()]
+        if not matches:
+            return await safe_reply(event, UITheme.warning("الدولة غير موجودة", f"لم يتم العثور على دولة مطابقة لـ <code>{text}</code>."), buttons=[[Button.inline(t['back'], f'pick_country_{pid}_0'.encode())]])
+        btn = [[Button.inline(f"{c['flag']} {c['name']} ({c['operators']})", f"set_plan_country_{pid}_{c['name']}".encode())] for c in matches[:10]]
+        btn.append([Button.inline(t['back'], f'pick_country_{pid}_0'.encode())])
+        await safe_reply(event, UITheme.header(f"نتائج البحث عن دولة: {text}", "countries_globe", "countries"), buttons=btn)
+        return
+
     # شحن المحفظة
-    if SessionManager.has(uid, f'charge_amount_prompt_{uid}'):
+    elif SessionManager.has(uid, f'charge_amount_prompt_{uid}'):
         SessionManager.remove(uid, f'charge_amount_prompt_{uid}')
         try:
             amount = float(text)
             if amount < 20:
-                await event.reply(t['min_charge_err'], parse_mode='html')
+                await safe_reply(event, UITheme.warning("الحد الأدنى للشحن", t['min_charge_err']))
                 SessionManager.set(uid, f'charge_amount_prompt_{uid}', True)
                 return
             SessionManager.set(uid, f'charging_amount_{uid}', amount)
             networks = cur.execute("SELECT network_name, address, binance_id FROM binance_networks").fetchall()
             details_text = t['show_all_payments_title'].replace("$amount", str(amount)) + "\n\n"
             for idx, (n_name, n_addr, n_id) in enumerate(networks, 1):
-                details_text += f"<b>{idx}. {n_name}</b>\n"
-                if n_id: details_text += f"• <code>ID:</code> <code>{n_id}</code>\n"
-                if n_addr: details_text += f"• <code>Address:</code> <code>{n_addr}</code>\n"
-                details_text += "───────────────────\n"
+                details_text += f"<blockquote><b>{idx}. {n_name}</b>\n"
+                if n_id:
+                    details_text += f"• <b>ID:</b> <code>{n_id}</code>\n"
+                if n_addr:
+                    details_text += f"• <b>Address:</b> <code>{n_addr}</code>\n"
+                details_text += "</blockquote>\n"
             details_text += t['show_all_payments_footer']
             btn = [
                 [Button.inline(t['btn_verify_now'], b'verify_payment_menu')],
                 [Button.inline(t['back'], b'wallet')]
             ]
-            await event.reply(details_text, buttons=btn, parse_mode='html')
-        except:
-            await event.reply(t['invalid_number_err'], parse_mode='html')
+            await safe_reply(event, details_text, buttons=btn)
+        except Exception:
+            await safe_reply(event, UITheme.error("قيمة غير صالحة", t['invalid_number_err']))
             SessionManager.set(uid, f'charge_amount_prompt_{uid}', True)
         return
 
     elif SessionManager.has(uid, f'verify_payment_{uid}'):
         SessionManager.remove(uid, f'verify_payment_{uid}')
-        await event.reply(t['verify_sent'], buttons=[[Button.inline(t['back'], b'wallet')]], parse_mode='html')
+        await safe_reply(event, UITheme.pending("جاري مراجعة الإيصال", t['verify_sent']), buttons=[[Button.inline(t['back'], b'wallet')]])
         u = await event.sender
         uname = f"@{u.username}" if u and u.username else "بدون معرف"
         fname = u.first_name if u else "مستخدم"
         dep_amt = SessionManager.pop(uid, f'charging_amount_{uid}') or 20.0
-        admin_msg = f"""<blockquote>🚨 <b>طلب تحقق من إيصال دفع!</b>
-• <b>العميل:</b> {fname} ({uname})
-• <b>الآيدي:</b> <code>{uid}</code>
-• <b>المبلغ المطلوب:</b> <code>${dep_amt:.2f}</code>
-• <b>البيان:</b> {text if text else 'صورة مرفقة'}</blockquote>"""
+        admin_msg = UITheme.header("طلب تحقق من إيصال دفع", "receipt", "payments") + (
+            f"\n\n<blockquote>• <b>العميل:</b> {fname} ({uname})\n"
+            f"• <b>الآيدي:</b> <code>{uid}</code>\n"
+            f"• <b>المبلغ المطلوب:</b> <code>${dep_amt:.2f}</code>\n"
+            f"• <b>البيان:</b> {text if text else 'صورة مرفقة'}</blockquote>"
+        )
         admin_btns = [
             [Button.inline("قبول وشحن الرصيد", f"admin_approve_dep_{uid}_{dep_amt}".encode()),
              Button.inline("رفض الإيصال", f"admin_reject_dep_{uid}".encode())]
         ]
         if event.media:
-            await client.send_file(DEV_ID, event.media, caption=admin_msg, buttons=admin_btns, parse_mode='html')
+            await safe_send(DEV_ID, admin_msg, buttons=admin_btns, file=event.media)
         else:
-            await client.send_message(DEV_ID, admin_msg, buttons=admin_btns, parse_mode='html')
+            await safe_send(DEV_ID, admin_msg, buttons=admin_btns)
         return
 
     elif SessionManager.has(uid, f'support_ticket_{uid}'):
         SessionManager.remove(uid, f'support_ticket_{uid}')
-        await event.reply(t['support_sent'], buttons=[[Button.inline(t['back'], b'main')]], parse_mode='html')
-        await client.send_message(DEV_ID, f"<blockquote>💬 <b>تذكرة دعم من المستخدم:</b> <code>{uid}</code>\n\n{text}</blockquote>", parse_mode='html')
+        await safe_reply(event, UITheme.success("تم إرسال التذكرة", t['support_sent']), buttons=[[Button.inline(t['back'], b'main')]])
+        await safe_send(DEV_ID, UITheme.header(f"تذكرة دعم من: {uid}", "ticket", "support") + f"\n\n<blockquote>{text}</blockquote>")
+        return
+
+    # أوامر الأدمن: تعيين Custom Emoji ID
+    elif SessionManager.has(uid, f'adm_emo_input_{uid}') and is_admin(uid):
+        info = SessionManager.pop(uid, f'adm_emo_input_{uid}')
+        cat, key = info["cat"], info["key"]
+        ok, msg = emoji_mgr.set_id(cat, key, text, db_conn=conn)
+        res_html = UITheme.success("تم التحديث", f"{msg}\n{ce(key, cat)}<code>{key}</code>") if ok else UITheme.error("خطأ في المعرف", msg)
+        await safe_reply(event, res_html, buttons=[[Button.inline("العودة للتصنيف", f"adm_emo_cat_{cat}".encode())]])
+        return
+
+    # أوامر الأدمن: بحث مستخدم
+    elif SessionManager.has(uid, f'adm_user_search_{uid}') and is_admin(uid):
+        SessionManager.remove(uid, f'adm_user_search_{uid}')
+        if not text.isdigit():
+            return await safe_reply(event, UITheme.error("صيغة خاطئة", "يرجى إرسال رقم الآيدي الصحيح للمستخدم."), buttons=[[Button.inline(t['back'], b'adm_users_mgr_0')]])
+        tid = int(text)
+        bal = get_wallet_balance(tid)
+        mem = get_membership_info(tid, 'ar')
+        await safe_reply(
+            event,
+            UITheme.header(f"نتيجة البحث: {tid}", "users", "admin") + f"\n\n<blockquote>• <b>الرصيد:</b> <code>${bal:.2f}</code>\n• <b>العضوية:</b> <b>{mem['tier']}</b></blockquote>",
+            buttons=[[Button.inline("فتح الملف الكامل", f"adm_user_det_{tid}".encode())], [Button.inline(t['back'], b'adm_users_mgr_0')]]
+        )
         return
 
     # أوامر الأدمن: إضافة شريحة جديدة
@@ -1682,14 +2703,14 @@ async def handler(event):
             parts = [x.strip() for x in text.split('|')]
             cat, name, price, mins, months, stock, is_dlr, desc = parts
             code_key = f"{cat}_{secrets.token_hex(3)}"
-            cur.execute('''INSERT INTO esims 
+            cur.execute("""INSERT INTO esims 
                 (category, name, code_key, price_usd, minutes, months, stock, min_qty, is_dealer, description)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (cat, name, code_key, float(price), int(mins), int(months), int(stock), 1, int(is_dlr), desc))
             conn.commit()
-            await event.reply(f"✅ تمت إضافة الشريحة <b>{name}</b> بنجاح إلى القسم <code>{cat}</code>!", buttons=[[Button.inline("إدارة الشرائح", b'adm_plans_mgr')]], parse_mode='html')
+            await safe_reply(event, UITheme.success("تمت الإضافة", f"تمت إضافة الشريحة <b>{name}</b> إلى القسم <code>{cat}</code>."), buttons=[[Button.inline("إدارة الشرائح", b'adm_plans_mgr_0')]])
         except Exception as e:
-            await event.reply(f"❌ خطأ أثناء الإضافة، تأكد من الصيغة: {e}")
+            await safe_reply(event, UITheme.error("خطأ أثناء الإضافة", f"تأكد من الصيغة المطلوبة: <code>{e}</code>"))
 
     # أوامر الأدمن: إضافة قسم جديد
     elif SessionManager.has(uid, f'adm_new_cat_{uid}') and is_admin(uid):
@@ -1698,9 +2719,9 @@ async def handler(event):
             slug, nar, nen = [x.strip() for x in text.split('|')]
             cur.execute("INSERT OR REPLACE INTO categories (slug, name_ar, name_en, is_visible) VALUES (?, ?, ?, 1)", (slug, nar, nen))
             conn.commit()
-            await event.reply(f"✅ تمت إضافة القسم <b>{nar}</b> بنجاح!", buttons=[[Button.inline("إدارة الأقسام", b'adm_cats_mgr')]], parse_mode='html')
+            await safe_reply(event, UITheme.success("تمت إضافة القسم", f"تمت إضافة القسم <b>{nar}</b> بنجاح."), buttons=[[Button.inline("إدارة الأقسام", b'adm_cats_mgr')]])
         except Exception as e:
-            await event.reply(f"❌ خطأ بالصيغة: {e}")
+            await safe_reply(event, UITheme.error("خطأ بالصيغة", str(e)))
 
     # أوامر الأدمن: تعديل سعر شريحة
     elif SessionManager.has(uid, f'action_plan_price_{uid}') and is_admin(uid):
@@ -1710,9 +2731,9 @@ async def handler(event):
             pr = float(text)
             cur.execute("UPDATE esims SET price_usd=? WHERE id=?", (pr, pid))
             conn.commit()
-            await event.reply(f"✅ تم تحديث السعر إلى <b>${pr:.2f}</b> بنجاح!", buttons=[[Button.inline("لوحة الشرائح", b'adm_plans_mgr')]], parse_mode='html')
-        except:
-            await event.reply("يرجى إرسال رقم صحيح.")
+            await safe_reply(event, UITheme.success("تم تحديث السعر", f"السعر الجديد: <code>${pr:.2f}</code>."), buttons=[[Button.inline("إدارة الشرائح", b'adm_plans_mgr_0')]])
+        except Exception:
+            await safe_reply(event, UITheme.error("قيمة خاطئة", "يرجى إرسال رقم صحيح."))
 
     # أوامر الأدمن: تعديل مخزون شريحة
     elif SessionManager.has(uid, f'action_plan_stock_{uid}') and is_admin(uid):
@@ -1722,9 +2743,9 @@ async def handler(event):
             st = int(text)
             cur.execute("UPDATE esims SET stock=? WHERE id=?", (st, pid))
             conn.commit()
-            await event.reply(f"✅ تم تحديث المخزون إلى <b>{st}</b> قطعة بنجاح!", buttons=[[Button.inline("لوحة الشرائح", b'adm_plans_mgr')]], parse_mode='html')
-        except:
-            await event.reply("يرجى إرسال رقم صحيح.")
+            await safe_reply(event, UITheme.success("تم تحديث المخزون", f"المخزون الجديد: <code>{st}</code> قطعة."), buttons=[[Button.inline("إدارة الشرائح", b'adm_plans_mgr_0')]])
+        except Exception:
+            await safe_reply(event, UITheme.error("قيمة خاطئة", "يرجى إرسال رقم صحيح."))
 
     # أوامر الأدمن: إضافة وسيلة دفع
     elif SessionManager.has(uid, f'adm_new_pay_{uid}') and is_admin(uid):
@@ -1737,23 +2758,23 @@ async def handler(event):
             k = f"pay_{secrets.token_hex(4)}"
             cur.execute("INSERT OR REPLACE INTO binance_networks (network_key, network_name, address, binance_id) VALUES (?, ?, ?, ?)", (k, name, addr, bid))
             conn.commit()
-            await event.reply(f"✅ تمت إضافة وسيلة الدفع <b>{name}</b> بنجاح!", buttons=[[Button.inline("إدارة طرق الدفع", b'adm_pay_mgr')]], parse_mode='html')
+            await safe_reply(event, UITheme.success("تمت الإضافة", f"تمت إضافة وسيلة الدفع <b>{name}</b> بنجاح."), buttons=[[Button.inline("إدارة طرق الدفع", b'adm_pay_mgr')]])
         except Exception as e:
-            await event.reply(f"❌ خطأ: {e}")
+            await safe_reply(event, UITheme.error("خطأ", str(e)))
 
     elif SessionManager.has(uid, f'adm_pay_set_addr_{uid}') and is_admin(uid):
         SessionManager.remove(uid, f'adm_pay_set_addr_{uid}')
         k = SessionManager.get(uid, f'target_pay_key_{uid}')
         cur.execute("UPDATE binance_networks SET address=? WHERE network_key=?", (text, k))
         conn.commit()
-        await event.reply("✅ تم تحديث العنوان بنجاح!", buttons=[[Button.inline("إدارة طرق الدفع", b'adm_pay_mgr')]], parse_mode='html')
+        await safe_reply(event, UITheme.success("تم التحديث", "تم تحديث العنوان بنجاح."), buttons=[[Button.inline("إدارة طرق الدفع", b'adm_pay_mgr')]])
 
     elif SessionManager.has(uid, f'adm_pay_set_id_{uid}') and is_admin(uid):
         SessionManager.remove(uid, f'adm_pay_set_id_{uid}')
         k = SessionManager.get(uid, f'target_pay_key_{uid}')
         cur.execute("UPDATE binance_networks SET binance_id=? WHERE network_key=?", (text, k))
         conn.commit()
-        await event.reply("✅ تم تحديث الـ ID بنجاح!", buttons=[[Button.inline("إدارة طرق الدفع", b'adm_pay_mgr')]], parse_mode='html')
+        await safe_reply(event, UITheme.success("تم التحديث", "تم تحديث الـ ID بنجاح."), buttons=[[Button.inline("إدارة طرق الدفع", b'adm_pay_mgr')]])
 
     # الرصيد والمخزون والإذاعة
     elif SessionManager.has(uid, f'add_balance_{uid}') and is_admin(uid):
@@ -1761,35 +2782,42 @@ async def handler(event):
         try:
             target_uid, amt = text.split()
             update_wallet(int(target_uid), float(amt), 'admin_deposit', "إضافة رصيد بواسطة الأدمن")
-            await event.reply(f"تمت إضافة ${float(amt):.2f} إلى محفظة {target_uid}.", buttons=[[Button.inline("لوحة التحكم", b'admin_panel')]])
-            try: await client.send_message(int(target_uid), f"تمت إضافة مبلغ ${float(amt):.2f} إلى محفظتك!")
-            except: pass
-        except: await event.reply("صيغة خاطئة (مثال: 123456789 50)")
+            await safe_reply(event, UITheme.success("تمت إضافة الرصيد", f"تمت إضافة <code>${float(amt):.2f}</code> إلى محفظة <code>{target_uid}</code>."), buttons=[[Button.inline("لوحة التحكم", b'admin_panel')]])
+            try:
+                await safe_send(int(target_uid), UITheme.success("شحن رصيد", f"تمت إضافة مبلغ <code>${float(amt):.2f}</code> إلى محفظتك."))
+            except Exception:
+                pass
+        except Exception:
+            await safe_reply(event, UITheme.error("صيغة خاطئة", "مثال: <code>123456789 50</code>"))
 
     elif SessionManager.has(uid, f'sub_balance_{uid}') and is_admin(uid):
         SessionManager.remove(uid, f'sub_balance_{uid}')
         try:
             target_uid, amt = text.split()
             update_wallet(int(target_uid), -float(amt), 'admin_withdraw', "خصم رصيد بواسطة الأدمن")
-            await event.reply(f"تم خصم ${float(amt):.2f} من محفظة {target_uid}.", buttons=[[Button.inline("لوحة التحكم", b'admin_panel')]])
-        except: await event.reply("صيغة خاطئة (مثال: 123456789 20)")
+            await safe_reply(event, UITheme.success("تم خصم الرصيد", f"تم خصم <code>${float(amt):.2f}</code> من محفظة <code>{target_uid}</code>."), buttons=[[Button.inline("لوحة التحكم", b'admin_panel')]])
+        except Exception:
+            await safe_reply(event, UITheme.error("صيغة خاطئة", "مثال: <code>123456789 20</code>"))
 
     elif SessionManager.has(uid, f'zero_balance_{uid}') and is_admin(uid):
         SessionManager.remove(uid, f'zero_balance_{uid}')
         try:
             target_uid = int(text)
             bal = get_wallet_balance(target_uid)
-            if bal > 0: update_wallet(target_uid, -bal, 'admin_zero', "تصفير الرصيد")
-            await event.reply(f"تم تصفير رصيد المستخدم {target_uid}.", buttons=[[Button.inline("لوحة التحكم", b'admin_panel')]])
-        except: await event.reply("أرسل آيدي صحيح")
+            if bal > 0:
+                update_wallet(target_uid, -bal, 'admin_zero', "تصفير الرصيد")
+            await safe_reply(event, UITheme.success("تم التصفير", f"تم تصفير رصيد المستخدم <code>{target_uid}</code>."), buttons=[[Button.inline("لوحة التحكم", b'admin_panel')]])
+        except Exception:
+            await safe_reply(event, UITheme.error("آيدي خاطئ", "أرسل آيدي صحيح."))
 
     elif SessionManager.has(uid, f'add_stock_{uid}') and is_admin(uid):
         SessionManager.remove(uid, f'add_stock_{uid}')
         try:
             cur.execute("UPDATE esims SET stock = stock + ?", (int(text),))
             conn.commit()
-            await event.reply(f"تمت إضافة {text} إلى المخزون بنجاح.", buttons=[[Button.inline("لوحة التحكم", b'admin_panel')]])
-        except: await event.reply("أرسل رقماً صحيحاً")
+            await safe_reply(event, UITheme.success("تم تحديث المخزون", f"تمت إضافة <code>{text}</code> إلى المخزون بنجاح."), buttons=[[Button.inline("لوحة التحكم", b'admin_panel')]])
+        except Exception:
+            await safe_reply(event, UITheme.error("قيمة خاطئة", "أرسل رقماً صحيحاً."))
 
     elif SessionManager.has(uid, f'manage_bans_{uid}') and is_admin(uid):
         SessionManager.remove(uid, f'manage_bans_{uid}')
@@ -1798,40 +2826,46 @@ async def handler(event):
             if is_banned(tid):
                 cur.execute("DELETE FROM bans WHERE user_id=?", (tid,))
                 ban_cache.pop(tid, None)
-                msg = f"تم فك حظر المستخدم {tid}."
+                msg = f"تم فك حظر المستخدم <code>{tid}</code>."
             else:
                 cur.execute("INSERT OR REPLACE INTO bans (user_id) VALUES (?)", (tid,))
                 ban_cache[tid] = True
-                msg = f"تم حظر المستخدم {tid}."
+                msg = f"تم حظر المستخدم <code>{tid}</code>."
             conn.commit()
-            await event.reply(msg, buttons=[[Button.inline("لوحة التحكم", b'admin_panel')]])
-        except: await event.reply("أرسل آيدي صحيح")
+            await safe_reply(event, UITheme.success("تحديث الحظر", msg), buttons=[[Button.inline("لوحة التحكم", b'admin_panel')]])
+        except Exception:
+            await safe_reply(event, UITheme.error("آيدي خاطئ", "أرسل آيدي صحيح."))
 
     elif SessionManager.has(uid, f'broadcast_{uid}') and is_admin(uid):
         SessionManager.remove(uid, f'broadcast_{uid}')
         users = cur.execute("SELECT user_id FROM users_settings").fetchall()
         succ, fail = 0, 0
-        status_msg = await event.reply("جاري الإذاعة...")
+        status_msg = await safe_reply(event, UITheme.pending("جاري الإذاعة", "يتم إرسال الرسالة إلى المستخدمين..."))
+        b_text = UITheme.header("إعلان رسمي من Aura eSIM", "broadcast", "admin") + f"\n\n<blockquote>{text}</blockquote>"
         for (u_id,) in users:
             try:
-                await client.send_message(u_id, f"<blockquote>📢 <b>إعلان رسمي من Aura eSIM:</b>\n\n{text}</blockquote>", parse_mode='html')
+                await safe_send(u_id, b_text)
                 succ += 1
                 await asyncio.sleep(0.04)
             except errors.FloodWaitError as e:
                 await asyncio.sleep(e.seconds)
                 try:
-                    await client.send_message(u_id, f"<blockquote>📢 <b>إعلان رسمي من Aura eSIM:</b>\n\n{text}</blockquote>", parse_mode='html')
+                    await safe_send(u_id, b_text)
                     succ += 1
-                except: fail += 1
-            except: fail += 1
-        await status_msg.edit(f"تمت الإذاعة بنجاح.\n- نجاح: {succ}\n- فشل: {fail}")
+                except Exception:
+                    fail += 1
+            except Exception:
+                fail += 1
+        plain_done, ent_done = render_html_entities(UITheme.success("اكتملت الإذاعة", f"• <b>نجاح:</b> <code>{succ}</code>\n• <b>فشل:</b> <code>{fail}</code>"))
+        await status_msg.edit(plain_done, formatting_entities=ent_done)
+
 
 # ==========================================
 # 9. نقطة البداية
 # ==========================================
 async def main():
     await client.start(bot_token=BOT_TOKEN)
-    logger.info("Aura eSIM Elite Bot running smoothly with dynamic admin controls.")
+    logger.info("Aura eSIM Elite Premium Bot running smoothly.")
     await client.run_until_disconnected()
 
 if __name__ == '__main__':
