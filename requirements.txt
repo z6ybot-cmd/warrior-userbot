@@ -18,3 +18,4 @@ Werkzeug
 aiosqlite
 python-dotenv
 pyrogram
+cryptography
