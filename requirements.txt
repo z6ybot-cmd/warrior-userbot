@@ -17,5 +17,6 @@ Flask
 Werkzeug
 aiosqlite
 python-dotenv
+aiogram
 pyrogram
 cryptography
