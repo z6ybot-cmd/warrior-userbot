@@ -22,9 +22,20 @@ from datetime import datetime, timedelta
 import aiohttp
 from cryptography.fernet import Fernet
 from dotenv import load_dotenv
-from pyrogram import Client, enums, filters
-from pyrogram.errors import BadRequest, FloodWait, MessageNotModified
-from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram import Bot, Dispatcher, F, Router
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
+from aiogram.filters import Command, CommandStart
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import (
+    BufferedInputFile,
+    CallbackQuery,
+    FSInputFile,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 
 # ==============================================================================
 # 2. Constants
@@ -94,10 +105,9 @@ API_HASH = "abedd7fb77eaf1f88bd3f286ea952253"
 BOT_TOKEN = "8095468555:AAGE__Qf3hEOKY0deVsGgzHjPLvFCTAmhUY"
 DEV_ID = 115431561
 
-OPENROUTER_API_KEY = "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"
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "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").strip()
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini").strip()
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-
-DEFAULT_LPA = "LPA:1$hfy.prod.ondemandconnectivity.com$FA1BEB0FB081104C79BAD7E29424A4101C6BD12873E8733BD856AFF7A7B6DECC"
 
 DB_PATH = os.getenv("DB_PATH", "esim_market.db").strip()
 BACKUP_SECRET = os.getenv("BACKUP_SECRET", "").strip()
@@ -768,7 +778,7 @@ class PremiumEmojiManager:
         eid = self.get_id(category, key)
         if not eid:
             return ""
-        return f'<emoji id="{eid}">✦</emoji>'
+        return f'<tg-emoji emoji-id="{eid}">✦</tg-emoji>'
 
 
 emoji_mgr = PremiumEmojiManager()
@@ -786,7 +796,7 @@ def line(category: str, text: str, key_left: str = "main", key_right: str = None
     return f"{left} {text}".strip() if left else text
 
 
-_EMOJI_TAG_RE = re.compile(r'<emoji\s+id=["\']?\d+["\']?>(.*?)</emoji>', re.IGNORECASE | re.DOTALL)
+_EMOJI_TAG_RE = re.compile(r'<tg-emoji\s+emoji-id=["\']?\d+["\']?>(.*?)</tg-emoji>', re.IGNORECASE | re.DOTALL)
 
 
 def strip_custom_emojis(html_text: str) -> str:
@@ -1931,30 +1941,46 @@ analytics_svc = AnalyticsService()
 
 
 # ==============================================================================
-# 20. Telegram Keyboards & UI Theme
+# 20. Telegram Keyboards & UI Theme (Aiogram 3.25+ Colored Buttons & Custom Emojis)
 # ==============================================================================
-_BTN_PARAMS = set(inspect.signature(InlineKeyboardButton.__init__).parameters.keys())
-SUPPORTS_BTN_STYLE = "style" in _BTN_PARAMS
-SUPPORTS_BTN_ICON = "icon_custom_emoji_id" in _BTN_PARAMS
+def detect_aiogram_button_capabilities() -> dict:
+    caps = {"aiogram_version": "unknown", "supports_style": False, "supports_icon_custom_emoji_id": False}
+    try:
+        import aiogram
+        caps["aiogram_version"] = getattr(aiogram, "__version__", "unknown")
+        fields = getattr(InlineKeyboardButton, "model_fields", None)
+        if isinstance(fields, dict):
+            caps["supports_style"] = "style" in fields
+            caps["supports_icon_custom_emoji_id"] = "icon_custom_emoji_id" in fields
+        else:
+            sig = inspect.signature(InlineKeyboardButton.__init__)
+            caps["supports_style"] = "style" in sig.parameters
+            caps["supports_icon_custom_emoji_id"] = "icon_custom_emoji_id" in sig.parameters
+    except Exception:
+        pass
+    return caps
+
+
+AIOGRAM_CAPS = detect_aiogram_button_capabilities()
 
 
 def pbtn(
     text: str,
     callback_data: str = None,
-    style: str = None,
-    icon_cat: str = None,
+    style: str = "primary",
+    icon_cat: str = "home",
     icon_key: str = "main",
     url: str = None,
 ) -> InlineKeyboardButton:
-    """منشئ أزرار متوافق مع Pyrogram/Bot API 9.4 بدون تمرير أي خصائص غير مدعومة."""
-    kwargs = {"text": text}
+    """منشئ أزرار ملونة (primary/success/danger) مع أيقونات Premium Custom Emojis في Aiogram 3.25+."""
+    kwargs = {"text": str(text)}
     if url:
-        kwargs["url"] = url
+        kwargs["url"] = str(url)
     elif callback_data is not None:
-        kwargs["callback_data"] = callback_data
-    if SUPPORTS_BTN_STYLE and style in ("primary", "success", "danger"):
+        kwargs["callback_data"] = str(callback_data)
+    if AIOGRAM_CAPS["supports_style"] and style in ("primary", "success", "danger"):
         kwargs["style"] = style
-    if SUPPORTS_BTN_ICON and icon_cat:
+    if AIOGRAM_CAPS["supports_icon_custom_emoji_id"] and icon_cat:
         eid = emoji_mgr.get_id(icon_cat, icon_key)
         if eid:
             kwargs["icon_custom_emoji_id"] = str(eid)
@@ -1975,7 +2001,7 @@ def strip_btn_extras(markup: InlineKeyboardMarkup) -> InlineKeyboardMarkup:
                 kw["callback_data"] = b.callback_data
             new_row.append(InlineKeyboardButton(**kw))
         new_rows.append(new_row)
-    return InlineKeyboardMarkup(new_rows)
+    return InlineKeyboardMarkup(inline_keyboard=new_rows)
 
 
 class UITheme:
@@ -1998,14 +2024,14 @@ class UITheme:
 
     @staticmethod
     def error(title: str, body_lines: list) -> str:
-        head = line("failure", f"<b>{title}</b>")
-        body = "\n".join(line("failure", ln, "cross") for ln in body_lines)
+        head = line("errors", f"<b>{title}</b>")
+        body = "\n".join(line("errors", ln, "cross") for ln in body_lines)
         return f"<blockquote>{head}\n{UITheme.DIVIDER}\n{body}</blockquote>"
 
     @staticmethod
     def warning(title: str, body_lines: list) -> str:
-        head = line("warning", f"<b>{title}</b>")
-        body = "\n".join(line("warning", ln, "alert") for ln in body_lines)
+        head = line("warnings", f"<b>{title}</b>")
+        body = "\n".join(line("warnings", ln, "alert") for ln in body_lines)
         return f"<blockquote>{head}\n{UITheme.DIVIDER}\n{body}</blockquote>"
 
     @staticmethod
@@ -2015,60 +2041,64 @@ class UITheme:
         return f"<blockquote>{head}\n{UITheme.DIVIDER}\n{body}</blockquote>"
 
 
-async def safe_answer(cb, text: str = None, alert: bool = False):
+def _is_emoji_or_style_err(exc: Exception) -> bool:
+    s = str(exc).upper()
+    return any(tok in s for tok in ("CUSTOM_EMOJI", "DOCUMENT_INVALID", "ICON_CUSTOM_EMOJI_ID", "BUTTON", "STYLE", "ENTITIES"))
+
+
+async def safe_answer(cb: CallbackQuery, text: str = None, alert: bool = False):
     try:
-        await cb.answer(text or "", show_alert=alert)
+        await cb.answer(text=text or "", show_alert=alert)
     except Exception:
         pass
 
 
-async def safe_send(client, chat_id: int, html_text: str, reply_markup=None, photo=None, document=None):
+async def safe_send(bot: Bot, chat_id: int, html_text: str, reply_markup=None, photo=None, document=None):
     try:
         if photo:
-            return await client.send_photo(chat_id, photo=photo, caption=html_text, parse_mode=enums.ParseMode.HTML, reply_markup=reply_markup)
+            return await bot.send_photo(chat_id=chat_id, photo=photo, caption=html_text, reply_markup=reply_markup)
         if document:
-            return await client.send_document(chat_id, document=document, caption=html_text, parse_mode=enums.ParseMode.HTML, reply_markup=reply_markup)
-        return await client.send_message(chat_id, html_text, parse_mode=enums.ParseMode.HTML, reply_markup=reply_markup)
-    except FloodWait as e:
-        await asyncio.sleep(e.value)
-        return await safe_send(client, chat_id, html_text, reply_markup=reply_markup, photo=photo, document=document)
-    except BadRequest as e:
-        msg = str(e).upper()
-        if any(tok in msg for tok in ("CUSTOM_EMOJI", "DOCUMENT_INVALID", "BUTTON", "STYLE", "ENTITY")):
+            doc_obj = document
+            if isinstance(document, io.BytesIO):
+                doc_obj = BufferedInputFile(document.getvalue(), filename=getattr(document, "name", "file.bin"))
+            elif isinstance(document, str) and os.path.isfile(document):
+                doc_obj = FSInputFile(document)
+            return await bot.send_document(chat_id=chat_id, document=doc_obj, caption=html_text, reply_markup=reply_markup)
+        return await bot.send_message(chat_id=chat_id, text=html_text, reply_markup=reply_markup)
+    except TelegramRetryAfter as e:
+        await asyncio.sleep(e.retry_after)
+        return await safe_send(bot, chat_id, html_text, reply_markup=reply_markup, photo=photo, document=document)
+    except TelegramBadRequest as e:
+        if _is_emoji_or_style_err(e):
             clean_txt = strip_custom_emojis(html_text)
             clean_kb = strip_btn_extras(reply_markup)
             if photo:
-                return await client.send_photo(chat_id, photo=photo, caption=clean_txt, parse_mode=enums.ParseMode.HTML, reply_markup=clean_kb)
+                return await bot.send_photo(chat_id=chat_id, photo=photo, caption=clean_txt, reply_markup=clean_kb)
             if document:
-                return await client.send_document(chat_id, document=document, caption=clean_txt, parse_mode=enums.ParseMode.HTML, reply_markup=clean_kb)
-            return await client.send_message(chat_id, clean_txt, parse_mode=enums.ParseMode.HTML, reply_markup=clean_kb)
+                doc_obj = document
+                if isinstance(document, io.BytesIO):
+                    doc_obj = BufferedInputFile(document.getvalue(), filename=getattr(document, "name", "file.bin"))
+                elif isinstance(document, str) and os.path.isfile(document):
+                    doc_obj = FSInputFile(document)
+                return await bot.send_document(chat_id=chat_id, document=doc_obj, caption=clean_txt, reply_markup=clean_kb)
+            return await bot.send_message(chat_id=chat_id, text=clean_txt, reply_markup=clean_kb)
         raise
 
 
-async def safe_edit(cb, html_text: str, reply_markup=None):
+async def safe_edit(cb: CallbackQuery, html_text: str, reply_markup=None):
     try:
-        return await cb.message.edit_text(html_text, parse_mode=enums.ParseMode.HTML, reply_markup=reply_markup)
-    except MessageNotModified:
-        return None
-    except BadRequest as e:
-        msg = str(e).upper()
-        if any(tok in msg for tok in ("CUSTOM_EMOJI", "DOCUMENT_INVALID", "BUTTON", "STYLE", "ENTITY")):
+        return await cb.message.edit_text(text=html_text, reply_markup=reply_markup)
+    except TelegramBadRequest as e:
+        el = str(e).lower()
+        if "message is not modified" in el:
+            return None
+        if _is_emoji_or_style_err(e):
             try:
-                return await cb.message.edit_text(
-                    strip_custom_emojis(html_text),
-                    parse_mode=enums.ParseMode.HTML,
-                    reply_markup=strip_btn_extras(reply_markup),
-                )
-            except MessageNotModified:
-                return None
-            except Exception:
+                return await cb.message.edit_text(text=strip_custom_emojis(html_text), reply_markup=strip_btn_extras(reply_markup))
+            except TelegramBadRequest:
                 pass
         try:
-            return await cb.message.reply_text(
-                strip_custom_emojis(html_text),
-                parse_mode=enums.ParseMode.HTML,
-                reply_markup=strip_btn_extras(reply_markup),
-            )
+            return await safe_send(cb.bot, cb.from_user.id, html_text, reply_markup=reply_markup)
         except Exception:
             return None
 
@@ -2116,34 +2146,34 @@ def build_main_menu(uid: int, first_name: str = "") -> tuple:
             pbtn(f"{t['btn_wallet']} (${bal:.2f})", "wallet", style="success", icon_cat="wallet"),
         ],
         [
-            pbtn(f"{t['btn_orders']} ({orders_cnt})", "my_orders_0", icon_cat="orders", icon_key="invoice"),
-            pbtn(t["btn_vip"], "vip_membership", icon_cat="vip"),
+            pbtn(f"{t['btn_orders']} ({orders_cnt})", "my_orders_0", style="primary", icon_cat="orders", icon_key="invoice"),
+            pbtn(t["btn_vip"], "vip_membership", style="success", icon_cat="vip"),
         ],
         [
-            pbtn(t["btn_referrals"], "referral_dashboard", icon_cat="premium", icon_key="star"),
-            pbtn(t["btn_ai"], "ai_assistant", icon_cat="developers"),
+            pbtn(t["btn_referrals"], "referral_dashboard", style="success", icon_cat="premium", icon_key="star"),
+            pbtn(t["btn_ai"], "ai_assistant", style="primary", icon_cat="developers"),
         ],
         [
-            pbtn(t["btn_countries"], "countries_list_0", icon_cat="countries"),
-            pbtn(t["btn_support"], "support_ticket", icon_cat="support"),
+            pbtn(t["btn_countries"], "countries_list_0", style="primary", icon_cat="countries"),
+            pbtn(t["btn_support"], "support_ticket", style="primary", icon_cat="support"),
         ],
-        [pbtn(t["btn_lang"], "change_language", icon_cat="settings")],
+        [pbtn(t["btn_lang"], "change_language", style="primary", icon_cat="settings")],
     ])
     if security_svc.is_admin(uid):
         rows.append([pbtn(f"{t['btn_admin']} [{role.upper()}]", "admin_panel", style="danger", icon_cat="admin")])
 
-    return text, InlineKeyboardMarkup(rows)
-
+    return text, InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 # ==============================================================================
 # 21-22. Telegram Message & Callback Query Handlers
 # ==============================================================================
-def register_handlers(app: Client):
-    """تسجيل كافة معالجات Pyrogram للرسائل والأوامر والأزرار."""
+def create_router() -> Router:
+    router = Router(name='aura_main_router')
+    """تسجيل كافة معالجات Aiogram 3.25+ للرسائل والأوامر والأزرار."""
 
-    @app.on_message(filters.command("start") & filters.private)
-    async def cmd_start(client: Client, message):
+    @router.message(CommandStart(), F.chat.type == 'private')
+    async def cmd_start(message: Message):
         uid = message.from_user.id
         if security_svc.is_banned(uid):
             return
@@ -2181,7 +2211,7 @@ def register_handlers(app: Client):
             logger.debug(f"Join notify skipped: {e}")
 
         if not cur_lang:
-            kb = InlineKeyboardMarkup([
+            kb = InlineKeyboardMarkup(inline_keyboard=[
                 [pbtn("العربية [AR]", "set_lang_ar", style="primary"), pbtn("English [EN]", "set_lang_en", style="primary")]
             ])
             await safe_send(
@@ -2193,18 +2223,18 @@ def register_handlers(app: Client):
             return
 
         txt, kb = build_main_menu(uid, message.from_user.first_name or "")
-        await safe_send(client, uid, txt, reply_markup=kb, photo=WELCOME_BANNER_URL or None)
+        await safe_send(message.bot, uid, txt, reply_markup=kb, photo=WELCOME_BANNER_URL or None)
 
-    @app.on_message(filters.command("admin") & filters.private)
-    async def cmd_admin(client: Client, message):
+    @router.message(Command('admin'), F.chat.type == 'private')
+    async def cmd_admin(message: Message):
         uid = message.from_user.id
         if not security_svc.is_admin(uid):
-            return await safe_send(client, uid, UITheme.error("وصول مرفوض", ["ليس لديك صلاحية الوصول إلى لوحة الإدارة."]))
+            return await safe_send(message.bot, uid, UITheme.error("وصول مرفوض", ["ليس لديك صلاحية الوصول إلى لوحة الإدارة."]))
         txt, kb = _render_admin_panel(uid)
-        await safe_send(client, uid, txt, reply_markup=kb)
+        await safe_send(message.bot, uid, txt, reply_markup=kb)
 
-    @app.on_message(filters.command("ai") & filters.private)
-    async def cmd_ai(client: Client, message):
+    @router.message(Command('ai'), F.chat.type == 'private')
+    async def cmd_ai(message: Message):
         uid = message.from_user.id
         if security_svc.is_banned(uid):
             return
@@ -2213,11 +2243,11 @@ def register_handlers(app: Client):
             client,
             uid,
             UITheme.header("المساعد الذكي AI", "developers") + "\n\n" + UITheme.card("developers", ["أرسل سؤالك حول الباقات أو الدول وسأساعدك فوراً."]),
-            reply_markup=InlineKeyboardMarkup([[pbtn("رجوع", "main", style="danger")]]),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[pbtn("رجوع", "main", style="danger")]]),
         )
 
-    @app.on_callback_query()
-    async def on_callback(client: Client, cb):
+    @router.callback_query()
+    async def on_callback(cb: CallbackQuery):
         uid = cb.from_user.id
         if security_svc.is_banned(uid):
             return await safe_answer(cb, "حسابك محظور.", alert=True)
@@ -2244,7 +2274,7 @@ def register_handlers(app: Client):
 
         if data == "change_language":
             await safe_answer(cb)
-            kb = InlineKeyboardMarkup([
+            kb = InlineKeyboardMarkup(inline_keyboard=[
                 [pbtn("العربية [AR]", "set_lang_ar", style="primary"), pbtn("English [EN]", "set_lang_en", style="primary")],
                 [pbtn(t["back"], "main", style="danger")],
             ])
@@ -2267,7 +2297,7 @@ def register_handlers(app: Client):
             await safe_edit(
                 cb,
                 UITheme.header("البحث الذكي عن باقة", "store", "search") + "\n\n" + UITheme.card("products", ["أرسل اسم الباقة أو المزود أو السعر الأقصى (مثال: Vodafone أو 30):"]),
-                reply_markup=InlineKeyboardMarkup([[pbtn(t["back"], "personal_section", style="danger")]]),
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[pbtn(t["back"], "personal_section", style="danger")]]),
             )
             return
 
@@ -2278,7 +2308,7 @@ def register_handlers(app: Client):
             await safe_edit(
                 cb,
                 UITheme.header("مقارنة سريعة لأشهر الباقات", "plans") + "\n\n" + UITheme.card("prices", lines_cmp),
-                reply_markup=InlineKeyboardMarkup([[pbtn(t["back"], "main", style="danger")]]),
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[pbtn(t["back"], "main", style="danger")]]),
             )
             return
 
@@ -2321,7 +2351,7 @@ def register_handlers(app: Client):
             if not plan:
                 return await safe_answer(cb, "الباقة غير متوفرة.", alert=True)
             if plan["stock"] <= 0:
-                return await safe_edit(cb, UITheme.error("نفاد المخزون", [f"الباقة <b>{plan['name']}</b> غير متوفرة حالياً."]), reply_markup=InlineKeyboardMarkup([[pbtn(t["back"], f"open_cat_{plan['category']}_0", style="danger")]]))
+                return await safe_edit(cb, UITheme.error("نفاد المخزون", [f"الباقة <b>{plan['name']}</b> غير متوفرة حالياً."]), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[pbtn(t["back"], f"open_cat_{plan['category']}_0", style="danger")]]))
 
             existing_sess = sessions.get(uid, f"checkout_{uid}")
             scope_lbl = existing_sess.get("scope", "Global") if isinstance(existing_sess, dict) and existing_sess.get("esim_id") == pid else "Global"
@@ -2363,7 +2393,7 @@ def register_handlers(app: Client):
             await safe_answer(cb)
             pid = int(data.split("_")[2])
             sessions.set(uid, f"coupon_input_{uid}", pid)
-            await safe_edit(cb, UITheme.header("تطبيق كوبون خصم", "prices", "discount") + "\n\n" + UITheme.card("prices", ["أرسل كود الكوبون الآن:"]), reply_markup=InlineKeyboardMarkup([[pbtn(t["back"], f"show_plan_{pid}_1", style="danger")]]))
+            await safe_edit(cb, UITheme.header("تطبيق كوبون خصم", "prices", "discount") + "\n\n" + UITheme.card("prices", ["أرسل كود الكوبون الآن:"]), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[pbtn(t["back"], f"show_plan_{pid}_1", style="danger")]]))
             return
 
         if data.startswith("pick_country_"):
@@ -2398,7 +2428,7 @@ def register_handlers(app: Client):
             await safe_answer(cb)
             pid = int(data.split("_")[3])
             sessions.set(uid, f"search_country_for_{uid}", pid)
-            await safe_edit(cb, UITheme.header(t["search_prompt"], "countries"), reply_markup=InlineKeyboardMarkup([[pbtn(t["back"], f"pick_country_{pid}_0", style="danger")]]))
+            await safe_edit(cb, UITheme.header(t["search_prompt"], "countries"), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[pbtn(t["back"], f"pick_country_{pid}_0", style="danger")]]))
             return
 
         if data.startswith("set_plan_country_"):
@@ -2412,7 +2442,7 @@ def register_handlers(app: Client):
                 sessions.set(uid, f"checkout_{uid}", sess)
             await safe_answer(cb, f"تم تحديد {cname}")
             cb.data = f"show_plan_{pid}_{qty}"
-            await on_callback(client, cb)
+            await on_callback(cb)
             return
 
         if data.startswith("add_cart_now_"):
@@ -2443,7 +2473,7 @@ def register_handlers(app: Client):
                     f"التغطية: <code>{sess.get('scope', 'Global')}</code> | الكمية: <code>{sess['qty']}</code>",
                     f"الإجمالي المطلوب: <code>${sess['final_price']:.2f}</code> | رصيدك: <code>${bal:.2f}</code>",
                 ]),
-                reply_markup=InlineKeyboardMarkup([
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                     [pbtn(f"تأكيد ودفع الآن (${sess['final_price']:.2f})", f"pay_wallet_now_{pid}", style="success", icon_cat="success")],
                     [pbtn(t["back"], f"show_plan_{pid}_{sess['qty']}", style="danger")],
                 ]),
@@ -2464,12 +2494,12 @@ def register_handlers(app: Client):
                 return await safe_edit(
                     cb,
                     UITheme.error("تعذر إتمام الشراء", [str(res)]),
-                    reply_markup=InlineKeyboardMarkup([[pbtn("شحن المحفظة", "charge_wallet", style="success")], [pbtn(t["back"], "main", style="danger")]]),
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[[pbtn("شحن المحفظة", "charge_wallet", style="success")], [pbtn(t["back"], "main", style="danger")]]),
                 )
             sessions.remove(uid, f"checkout_{uid}")
             if res["new_stock"] <= 10:
                 try:
-                    await safe_send(client, DEV_ID, UITheme.warning("تنبيه انخفاض المخزون", [f"الباقة: {res['plan_name']}", f"المتبقي: <code>{res['new_stock']}</code>"]))
+                    await safe_send(cb.bot, DEV_ID, UITheme.warning("تنبيه انخفاض المخزون", [f"الباقة: {res['plan_name']}", f"المتبقي: <code>{res['new_stock']}</code>"]))
                 except Exception:
                     pass
 
@@ -2477,11 +2507,11 @@ def register_handlers(app: Client):
                 lpa_txt = "\n".join([f"eSIM #{i+1}: {DEFAULT_LPA}" for i in range(res["qty"])])
                 bio = io.BytesIO(lpa_txt.encode("utf-8"))
                 bio.name = f"Aura_eSIMs_{res['order_id']}.txt"
-                await safe_send(client, uid, UITheme.success("تم الشراء بنجاح", [f"رقم الطلب: <code>{res['order_id']}</code>", f"المخصوم: <code>${res['final_price']:.2f}</code>", f"نقاط الولاء المكتسبة: <code>+{res['points_earned']}</code>"]), document=bio)
+                await safe_send(cb.bot, uid, UITheme.success("تم الشراء بنجاح", [f"رقم الطلب: <code>{res['order_id']}</code>", f"المخصوم: <code>${res['final_price']:.2f}</code>", f"نقاط الولاء المكتسبة: <code>+{res['points_earned']}</code>"]), document=bio)
             else:
-                await safe_send(client, uid, UITheme.success("تم الشراء بنجاح", [f"رقم الطلب: <code>{res['order_id']}</code>", f"كود LPA:\n<code>{DEFAULT_LPA}</code>", f"نقاط الولاء المكتسبة: <code>+{res['points_earned']}</code>"]), photo=DEFAULT_BARCODE)
+                await safe_send(cb.bot, uid, UITheme.success("تم الشراء بنجاح", [f"رقم الطلب: <code>{res['order_id']}</code>", f"كود LPA:\n<code>{DEFAULT_LPA}</code>", f"نقاط الولاء المكتسبة: <code>+{res['points_earned']}</code>"]), photo=DEFAULT_BARCODE)
             txt, kb = build_main_menu(uid, cb.from_user.first_name or "")
-            await safe_send(client, uid, txt, reply_markup=kb)
+            await safe_send(cb.bot, uid, txt, reply_markup=kb)
             return
 
         # ------------------ السلة ------------------
@@ -2493,7 +2523,7 @@ def register_handlers(app: Client):
             finally:
                 conn.close()
             if not items:
-                return await safe_edit(cb, UITheme.header("سلة المشتريات", "orders") + "\n\n" + UITheme.card("orders", ["السلة فارغة حالياً."]), reply_markup=InlineKeyboardMarkup([[pbtn("تصفح المتجر", "personal_section", style="primary")], [pbtn(t["back"], "main", style="danger")]]))
+                return await safe_edit(cb, UITheme.header("سلة المشتريات", "orders") + "\n\n" + UITheme.card("orders", ["السلة فارغة حالياً."]), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[pbtn("تصفح المتجر", "personal_section", style="primary")], [pbtn(t["back"], "main", style="danger")]]))
             tot = sum(float(i["price"]) for i in items)
             lines_c = [f"<b>{i['name']}</b> ({i['scope']}) — <code>${i['price']:.2f}</code>" for i in items]
             lines_c.append(f"الإجمالي النهائي: <code>${tot:.2f}</code>")
@@ -2519,7 +2549,7 @@ def register_handlers(app: Client):
                 conn.close()
             await safe_answer(cb, "تم تحديث الكمية.")
             cb.data = "view_cart"
-            await on_callback(client, cb)
+            await on_callback(cb)
             return
 
         if data.startswith("cart_del_"):
@@ -2532,7 +2562,7 @@ def register_handlers(app: Client):
                 conn.close()
             await safe_answer(cb, "تم حذف العنصر.")
             cb.data = "view_cart"
-            await on_callback(client, cb)
+            await on_callback(cb)
             return
 
         if data == "cart_confirm":
@@ -2540,7 +2570,7 @@ def register_handlers(app: Client):
             await safe_edit(
                 cb,
                 UITheme.header("تأكيد شراء السلة", "payments") + "\n\n" + UITheme.card("payments", ["هل تريد إتمام الدفع من رصيد المحفظة؟"]),
-                reply_markup=InlineKeyboardMarkup([[pbtn("تأكيد الدفع الآن", "cart_checkout", style="success")], [pbtn(t["back"], "view_cart", style="danger")]]),
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[pbtn("تأكيد الدفع الآن", "cart_checkout", style="success")], [pbtn(t["back"], "view_cart", style="danger")]]),
             )
             return
 
@@ -2550,20 +2580,20 @@ def register_handlers(app: Client):
             await safe_answer(cb)
             ok, res = await payment_svc.checkout_cart(uid)
             if not ok:
-                return await safe_edit(cb, UITheme.error("تعذر إتمام الدفع", [str(res)]), reply_markup=InlineKeyboardMarkup([[pbtn(t["back"], "view_cart", style="danger")]]))
-            await safe_send(client, uid, UITheme.success("تم دفع السلة بنجاح", [f"رقم العملية: <code>{res['order_id']}</code>", f"كود LPA:\n<code>{DEFAULT_LPA}</code>"]), photo=DEFAULT_BARCODE)
+                return await safe_edit(cb, UITheme.error("تعذر إتمام الدفع", [str(res)]), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[pbtn(t["back"], "view_cart", style="danger")]]))
+            await safe_send(cb.bot, uid, UITheme.success("تم دفع السلة بنجاح", [f"رقم العملية: <code>{res['order_id']}</code>", f"كود LPA:\n<code>{DEFAULT_LPA}</code>"]), photo=DEFAULT_BARCODE)
             return
 
         # ------------------ المحفظة، الطلبات، الولاء، الإحالات، التجار، AI، الدعم ------------------
         if data == "wallet":
             await safe_answer(cb)
             bal = user_svc.get_wallet_balance(uid)
-            me = await client.get_me()
+            me = await cb.bot.get_me()
             ref_link = f"https://t.me/{me.username}?start=ref{uid}"
             await safe_edit(
                 cb,
                 UITheme.header("محفظتك الرقمية", "wallet") + "\n\n" + UITheme.card("wallet", [f"الرصيد المتاح: <code>${bal:.2f}</code>", f"رابط الإحالة:\n<code>{ref_link}</code>"]),
-                reply_markup=InlineKeyboardMarkup([
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                     [pbtn("شحن المحفظة", "charge_wallet", style="success"), pbtn(t["btn_transactions"], "wallet_transactions_0", style="primary")],
                     [pbtn(t["btn_verify_payment"], "verify_payment_menu")],
                     [pbtn(t["back"], "main", style="danger")],
@@ -2574,7 +2604,7 @@ def register_handlers(app: Client):
         if data == "charge_wallet":
             await safe_answer(cb)
             sessions.set(uid, f"charge_amount_prompt_{uid}", True)
-            await safe_edit(cb, UITheme.header("شحن المحفظة", "wallet", "deposit") + "\n\n" + UITheme.card("prices", ["أرسل المبلغ المراد إيداعه بالدولار (الحد الأدنى $20):"]), reply_markup=InlineKeyboardMarkup([[pbtn(t["back"], "wallet", style="danger")]]))
+            await safe_edit(cb, UITheme.header("شحن المحفظة", "wallet", "deposit") + "\n\n" + UITheme.card("prices", ["أرسل المبلغ المراد إيداعه بالدولار (الحد الأدنى $20):"]), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[pbtn(t["back"], "wallet", style="danger")]]))
             return
 
         if data.startswith("wallet_transactions_"):
@@ -2586,15 +2616,15 @@ def register_handlers(app: Client):
             finally:
                 conn.close()
             if not rows:
-                return await safe_edit(cb, UITheme.header("سجل المعاملات", "payments") + "\n\n" + UITheme.card("payments", ["لا توجد معاملات مسجلة."]), reply_markup=InlineKeyboardMarkup([[pbtn(t["back"], "wallet", style="danger")]]))
+                return await safe_edit(cb, UITheme.header("سجل المعاملات", "payments") + "\n\n" + UITheme.card("payments", ["لا توجد معاملات مسجلة."]), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[pbtn(t["back"], "wallet", style="danger")]]))
             tx_lines = [f"#{r['id']} | <code>{'+' if r['amount']>0 else ''}${r['amount']:.2f}</code> | {r['description']} ({r['date']})" for r in rows]
-            await safe_edit(cb, UITheme.header("سجل المعاملات المالية", "payments") + "\n\n" + UITheme.card("payments", tx_lines), reply_markup=InlineKeyboardMarkup([[pbtn(t["back"], "wallet", style="danger")]]))
+            await safe_edit(cb, UITheme.header("سجل المعاملات المالية", "payments") + "\n\n" + UITheme.card("payments", tx_lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[pbtn(t["back"], "wallet", style="danger")]]))
             return
 
         if data == "verify_payment_menu":
             await safe_answer(cb)
             sessions.set(uid, f"verify_payment_{uid}", True)
-            await safe_edit(cb, UITheme.header("التحقق من الدفع", "payments", "verify") + "\n\n" + UITheme.card("payments", ["أرسل معرف المعاملة (TxID) أو صورة الإيصال:"]), reply_markup=InlineKeyboardMarkup([[pbtn(t["back"], "wallet", style="danger")]]))
+            await safe_edit(cb, UITheme.header("التحقق من الدفع", "payments", "verify") + "\n\n" + UITheme.card("payments", ["أرسل معرف المعاملة (TxID) أو صورة الإيصال:"]), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[pbtn(t["back"], "wallet", style="danger")]]))
             return
 
         if data.startswith("show_order_payments_"):
@@ -2609,7 +2639,7 @@ def register_handlers(app: Client):
             await safe_edit(
                 cb,
                 UITheme.header("طرق الدفع المتاحة", "payments") + "\n\n" + UITheme.card("payments", net_lines),
-                reply_markup=InlineKeyboardMarkup([[pbtn("إرسال إيصال الدفع", "verify_payment_menu", style="success")], [pbtn(t["back"], f"show_plan_{pid}_1", style="danger")]]),
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[pbtn("إرسال إيصال الدفع", "verify_payment_menu", style="success")], [pbtn(t["back"], f"show_plan_{pid}_1", style="danger")]]),
             )
             return
 
@@ -2622,7 +2652,7 @@ def register_handlers(app: Client):
             finally:
                 conn.close()
             if not rows:
-                return await safe_edit(cb, UITheme.header("طلباتي المكتملة", "orders") + "\n\n" + UITheme.card("orders", ["لا توجد طلبات مكتملة حتى الآن."]), reply_markup=InlineKeyboardMarkup([[pbtn(t["back"], "main", style="danger")]]))
+                return await safe_edit(cb, UITheme.header("طلباتي المكتملة", "orders") + "\n\n" + UITheme.card("orders", ["لا توجد طلبات مكتملة حتى الآن."]), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[pbtn(t["back"], "main", style="danger")]]))
             ord_lines = [f"#{r['order_id']} | {r['quantity']}x {r['name']} — <code>${r['total_usd']:.2f}</code>" for r in rows]
             kb_rows = [[pbtn(f"تفاصيل #{r['order_id']}", f"reload_{r['order_id']}", style="primary")] for r in rows]
             kb_rows.append([pbtn(t["back"], "main", style="danger")])
@@ -2632,7 +2662,7 @@ def register_handlers(app: Client):
         if data.startswith("reload_"):
             await safe_answer(cb)
             oid = data.replace("reload_", "")
-            await safe_send(client, uid, UITheme.header(f"فاتورة الطلب #{oid}", "orders", "invoice") + "\n\n" + UITheme.card("orders", [f"كود التفعيل (LPA):\n<code>{DEFAULT_LPA}</code>"]), photo=DEFAULT_BARCODE)
+            await safe_send(cb.bot, uid, UITheme.header(f"فاتورة الطلب #{oid}", "orders", "invoice") + "\n\n" + UITheme.card("orders", [f"كود التفعيل (LPA):\n<code>{DEFAULT_LPA}</code>"]), photo=DEFAULT_BARCODE)
             return
 
         if data.startswith("countries_list_"):
@@ -2649,7 +2679,7 @@ def register_handlers(app: Client):
             nav.append(pbtn(f"{page+1}/{total_pages}", "noop"))
             if page + 1 < total_pages:
                 nav.append(pbtn(t["next_page"], f"countries_list_{page+1}"))
-            await safe_edit(cb, UITheme.header(f"الدول المدعومة ({len(COUNTRIES_DATA)})", "countries") + "\n\n" + UITheme.card("countries", c_lines), reply_markup=InlineKeyboardMarkup([nav, [pbtn(t["back"], "main", style="danger")]]))
+            await safe_edit(cb, UITheme.header(f"الدول المدعومة ({len(COUNTRIES_DATA)})", "countries") + "\n\n" + UITheme.card("countries", c_lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=[nav, [pbtn(t["back"], "main", style="danger")]]))
             return
 
         if data == "vip_membership":
@@ -2663,14 +2693,14 @@ def register_handlers(app: Client):
                     f"نقاط الولاء: <code>{loy['points']}</code> نقطة",
                     f"خصم المستوى: <code>{loy['tier_discount']}%</code> | وضع التاجر API: <b>{'مفعل' if dlr['has_api'] else 'غير مفعل'}</b>",
                 ]),
-                reply_markup=InlineKeyboardMarkup([[pbtn(t["back"], "main", style="danger")]]),
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[pbtn(t["back"], "main", style="danger")]]),
             )
             return
 
         if data == "referral_dashboard":
             await safe_answer(cb)
             st = user_svc.get_referral_stats(uid)
-            me = await client.get_me()
+            me = await cb.bot.get_me()
             link = f"https://t.me/{me.username}?start=ref{uid}"
             await safe_edit(
                 cb,
@@ -2679,7 +2709,7 @@ def register_handlers(app: Client):
                     f"إجمالي الأرباح: <code>${st['earnings']:.2f}</code> (5% مكافأة لأول طلب)",
                     f"رابط الدعوة:\n<code>{link}</code>",
                 ]),
-                reply_markup=InlineKeyboardMarkup([[pbtn(t["back"], "main", style="danger")]]),
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[pbtn(t["back"], "main", style="danger")]]),
             )
             return
 
@@ -2708,7 +2738,7 @@ def register_handlers(app: Client):
             await safe_edit(
                 cb,
                 UITheme.header("تفعيل نظام الـ API للتجار", "dealers", "api") + "\n\n" + UITheme.card("prices", ["تكلفة التفعيل: <code>$100.00</code> لمرة واحدة", "المميزات: خصم دائم 50% + مفتاح API خاص."]),
-                reply_markup=InlineKeyboardMarkup([[pbtn("تأكيد وشراء ($100)", "confirm_buy_api_sub", style="success")], [pbtn(t["back"], "dealer_section", style="danger")]]),
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[pbtn("تأكيد وشراء ($100)", "confirm_buy_api_sub", style="success")], [pbtn(t["back"], "dealer_section", style="danger")]]),
             )
             return
 
@@ -2716,8 +2746,8 @@ def register_handlers(app: Client):
             await safe_answer(cb)
             ok, res = await payment_svc.activate_dealer_api(uid)
             if not ok:
-                return await safe_edit(cb, UITheme.error("تعذر التفعيل", [str(res)]), reply_markup=InlineKeyboardMarkup([[pbtn(t["back"], "dealer_section", style="danger")]]))
-            await safe_edit(cb, UITheme.success("تم تفعيل API بنجاح", [f"مفتاحك:\n<code>{res}</code>"]), reply_markup=InlineKeyboardMarkup([[pbtn(t["back"], "dealer_section", style="danger")]]))
+                return await safe_edit(cb, UITheme.error("تعذر التفعيل", [str(res)]), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[pbtn(t["back"], "dealer_section", style="danger")]]))
+            await safe_edit(cb, UITheme.success("تم تفعيل API بنجاح", [f"مفتاحك:\n<code>{res}</code>"]), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[pbtn(t["back"], "dealer_section", style="danger")]]))
             return
 
         if data == "view_api_key_info":
@@ -2725,13 +2755,13 @@ def register_handlers(app: Client):
             dlr = dealer_svc.get_dealer_info(uid)
             if not dlr["has_api"]:
                 return await safe_answer(cb, "ليس لديك اشتراك API.", alert=True)
-            await safe_edit(cb, UITheme.header("بيانات مفتاح API", "dealers", "api") + "\n\n" + UITheme.card("dealers", [f"المفتاح:\n<code>{dlr['api_key']}</code>", f"الحد اليومي: <code>{dlr['daily_limit']}</code>"]), reply_markup=InlineKeyboardMarkup([[pbtn(t["back"], "dealer_section", style="danger")]]))
+            await safe_edit(cb, UITheme.header("بيانات مفتاح API", "dealers", "api") + "\n\n" + UITheme.card("dealers", [f"المفتاح:\n<code>{dlr['api_key']}</code>", f"الحد اليومي: <code>{dlr['daily_limit']}</code>"]), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[pbtn(t["back"], "dealer_section", style="danger")]]))
             return
 
         if data == "dealer_regen_key":
             new_k = dealer_svc.regenerate_key(uid)
             await safe_answer(cb, "تم تجديد المفتاح.", alert=True)
-            await safe_edit(cb, UITheme.success("تم تجديد مفتاح API", [f"المفتاح الجديد:\n<code>{new_k}</code>"]), reply_markup=InlineKeyboardMarkup([[pbtn(t["back"], "dealer_section", style="danger")]]))
+            await safe_edit(cb, UITheme.success("تم تجديد مفتاح API", [f"المفتاح الجديد:\n<code>{new_k}</code>"]), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[pbtn(t["back"], "dealer_section", style="danger")]]))
             return
 
         if data == "ai_assistant":
@@ -2740,25 +2770,25 @@ def register_handlers(app: Client):
             await safe_edit(
                 cb,
                 UITheme.header("المساعد الذكي AI", "developers") + "\n\n" + UITheme.card("developers", [f"الحالة: <b>{'مفعل' if ai_svc.is_enabled() else 'معطل'}</b>", "أرسل استفسارك وسيرد عليك المساعد الذكي فوراً."]),
-                reply_markup=InlineKeyboardMarkup([[pbtn(t["back"], "main", style="danger")]]),
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[pbtn(t["back"], "main", style="danger")]]),
             )
             return
 
         if data == "support_ticket":
             await safe_answer(cb)
             sessions.set(uid, f"support_ticket_{uid}", True)
-            await safe_edit(cb, UITheme.header("الدعم الفني المباشر", "support") + "\n\n" + UITheme.card("support", ["اكتب مشكلتك أو استفسارك لفتح تذكرة دعم برقم متابعة:"]), reply_markup=InlineKeyboardMarkup([[pbtn(t["back"], "main", style="danger")]]))
+            await safe_edit(cb, UITheme.header("الدعم الفني المباشر", "support") + "\n\n" + UITheme.card("support", ["اكتب مشكلتك أو استفسارك لفتح تذكرة دعم برقم متابعة:"]), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[pbtn(t["back"], "main", style="danger")]]))
             return
 
         # ------------------ لوحة الإدارة المتقدمة ------------------
         if data == "admin_panel" or data.startswith("adm_") or data.startswith("admin_"):
             if not security_svc.is_admin(uid):
                 return await safe_answer(cb, "غير مصرح لك بالوصول.", alert=True)
-            await _handle_admin_callbacks(client, cb, uid, data, t)
+            await _handle_admin_callbacks(cb, uid, data, t)
             return
 
-    @app.on_message(filters.private & ~filters.command(["start", "admin", "ai"]))
-    async def on_message(client: Client, message):
+    @router.message(F.chat.type == 'private')
+    async def on_message(message: Message):
         uid = message.from_user.id
         if security_svc.is_banned(uid) or not security_svc.allow_rate(uid):
             return
@@ -2769,7 +2799,7 @@ def register_handlers(app: Client):
         if sessions.has(uid, f"ai_chat_{uid}"):
             sessions.remove(uid, f"ai_chat_{uid}")
             reply = await ai_svc.ask(text)
-            await safe_send(client, uid, UITheme.header("رد المساعد الذكي", "developers") + "\n\n" + UITheme.card("developers", [reply]), reply_markup=InlineKeyboardMarkup([[pbtn(t["back"], "main", style="danger")]]))
+            await safe_send(message.bot, uid, UITheme.header("رد المساعد الذكي", "developers") + "\n\n" + UITheme.card("developers", [reply]), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[pbtn(t["back"], "main", style="danger")]]))
             return
 
         if sessions.has(uid, f"coupon_input_{uid}"):
@@ -2782,7 +2812,7 @@ def register_handlers(app: Client):
                     sess["coupon"] = text.strip().upper()
                     sessions.set(uid, f"checkout_{uid}", sess)
             res_html = UITheme.success("الكوبون", [msg]) if ok else UITheme.error("الكوبون", [msg])
-            await safe_send(client, uid, res_html, reply_markup=InlineKeyboardMarkup([[pbtn("العودة للباقة", f"show_plan_{pid}_1", style="primary")]]))
+            await safe_send(message.bot, uid, res_html, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[pbtn("العودة للباقة", f"show_plan_{pid}_1", style="primary")]]))
             return
 
         if sessions.has(uid, f"search_plans_{uid}"):
@@ -2790,20 +2820,20 @@ def register_handlers(app: Client):
             max_p = float(text) if text.replace(".", "", 1).isdigit() else None
             plans, _ = product_svc.list_plans(search=None if max_p else text, max_price=max_p, limit=12)
             if not plans:
-                return await safe_send(client, uid, UITheme.warning("لا توجد نتائج", [f"لم يتم العثور على باقات مطابقة لـ <code>{text}</code>."]), reply_markup=InlineKeyboardMarkup([[pbtn(t["back"], "personal_section", style="danger")]]))
+                return await safe_send(message.bot, uid, UITheme.warning("لا توجد نتائج", [f"لم يتم العثور على باقات مطابقة لـ <code>{text}</code>."]), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[pbtn(t["back"], "personal_section", style="danger")]]))
             rows = [[pbtn(f"{p['name']} — ${p['price_usd']:.0f}", f"show_plan_{p['id']}_1", style="primary")] for p in plans]
             rows.append([pbtn(t["back"], "personal_section", style="danger")])
-            await safe_send(client, uid, UITheme.header(f"نتائج البحث: {text}", "store", "search"), reply_markup=InlineKeyboardMarkup(rows))
+            await safe_send(message.bot, uid, UITheme.header(f"نتائج البحث: {text}", "store", "search"), reply_markup=InlineKeyboardMarkup(rows))
             return
 
         if sessions.has(uid, f"search_country_for_{uid}"):
             pid = sessions.pop(uid, f"search_country_for_{uid}")
             matches = product_svc.search_countries(text)
             if not matches:
-                return await safe_send(client, uid, UITheme.warning("غير موجودة", ["لم يتم العثور على الدولة."]), reply_markup=InlineKeyboardMarkup([[pbtn(t["back"], f"pick_country_{pid}_0", style="danger")]]))
+                return await safe_send(message.bot, uid, UITheme.warning("غير موجودة", ["لم يتم العثور على الدولة."]), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[pbtn(t["back"], f"pick_country_{pid}_0", style="danger")]]))
             rows = [[pbtn(f"{c['flag']} {c['name']}", f"set_plan_country_{pid}_{c['name']}")] for c in matches[:10]]
             rows.append([pbtn(t["back"], f"pick_country_{pid}_0", style="danger")])
-            await safe_send(client, uid, UITheme.header("نتائج الدول", "countries"), reply_markup=InlineKeyboardMarkup(rows))
+            await safe_send(message.bot, uid, UITheme.header("نتائج الدول", "countries"), reply_markup=InlineKeyboardMarkup(rows))
             return
 
         if sessions.has(uid, f"charge_amount_prompt_{uid}"):
@@ -2812,7 +2842,7 @@ def register_handlers(app: Client):
                 amt = float(text)
                 if amt < 20:
                     sessions.set(uid, f"charge_amount_prompt_{uid}", True)
-                    return await safe_send(client, uid, UITheme.warning("تنبيه", [t["min_charge_err"]]))
+                    return await safe_send(message.bot, uid, UITheme.warning("تنبيه", [t["min_charge_err"]]))
                 sessions.set(uid, f"charging_amount_{uid}", amt)
                 conn = db.connect()
                 try:
@@ -2824,32 +2854,35 @@ def register_handlers(app: Client):
                     client,
                     uid,
                     UITheme.header(f"بوابة الشحن — ${amt:.2f}", "payments") + "\n\n" + UITheme.card("payments", n_lines),
-                    reply_markup=InlineKeyboardMarkup([[pbtn("إرسال إيصال الدفع", "verify_payment_menu", style="success")], [pbtn(t["back"], "wallet", style="danger")]]),
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[[pbtn("إرسال إيصال الدفع", "verify_payment_menu", style="success")], [pbtn(t["back"], "wallet", style="danger")]]),
                 )
             except Exception:
                 sessions.set(uid, f"charge_amount_prompt_{uid}", True)
-                await safe_send(client, uid, UITheme.error("قيمة خاطئة", [t["invalid_number_err"]]))
+                await safe_send(message.bot, uid, UITheme.error("قيمة خاطئة", [t["invalid_number_err"]]))
             return
 
         if sessions.has(uid, f"verify_payment_{uid}"):
             sessions.remove(uid, f"verify_payment_{uid}")
             dep_amt = sessions.pop(uid, f"charging_amount_{uid}") or 20.0
-            await safe_send(client, uid, UITheme.pending("جاري المراجعة", [t["verify_sent"]]), reply_markup=InlineKeyboardMarkup([[pbtn(t["back"], "wallet", style="danger")]]))
-            kb = InlineKeyboardMarkup([[pbtn("قبول وشحن", f"admin_approve_dep_{uid}_{dep_amt}", style="success"), pbtn("رفض", f"admin_reject_dep_{uid}", style="danger")]])
+            await safe_send(message.bot, uid, UITheme.pending("جاري المراجعة", [t["verify_sent"]]), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[pbtn(t["back"], "wallet", style="danger")]]))
+            kb = InlineKeyboardMarkup(inline_keyboard=[[pbtn("قبول وشحن", f"admin_approve_dep_{uid}_{dep_amt}", style="success"), pbtn("رفض", f"admin_reject_dep_{uid}", style="danger")]])
             msg_html = UITheme.header("طلب تحقق من دفع", "payments") + "\n\n" + UITheme.card("payments", [f"المستخدم: <code>{uid}</code>", f"المبلغ: <code>${dep_amt:.2f}</code>", f"البيان: {text or 'مرفق'}"])
-            await safe_send(client, DEV_ID, msg_html, reply_markup=kb)
+            await safe_send(message.bot, DEV_ID, msg_html, reply_markup=kb)
             return
 
         if sessions.has(uid, f"support_ticket_{uid}"):
             sessions.remove(uid, f"support_ticket_{uid}")
             tid = support_svc.create_ticket(uid, "general", text or "رسالة دعم")
-            await safe_send(client, uid, UITheme.success("تم إنشاء التذكرة", [f"رقم التذكرة: <code>{tid}</code>", t["support_sent"]]), reply_markup=InlineKeyboardMarkup([[pbtn(t["back"], "main", style="danger")]]))
-            await safe_send(client, DEV_ID, UITheme.header(f"تذكرة جديدة {tid}", "support") + "\n\n" + UITheme.card("support", [f"من: <code>{uid}</code>", text]))
+            await safe_send(message.bot, uid, UITheme.success("تم إنشاء التذكرة", [f"رقم التذكرة: <code>{tid}</code>", t["support_sent"]]), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[pbtn(t["back"], "main", style="danger")]]))
+            await safe_send(message.bot, DEV_ID, UITheme.header(f"تذكرة جديدة {tid}", "support") + "\n\n" + UITheme.card("support", [f"من: <code>{uid}</code>", text]))
             return
 
         # معالجات إدخال الأدمن المحمية بالصلاحية
         if security_svc.is_admin(uid):
-            await _handle_admin_inputs(client, uid, text, t)
+            await _handle_admin_inputs(message.bot, uid, text, t)
+
+
+    return router
 
 
 def _render_admin_panel(uid: int) -> tuple:
@@ -2876,7 +2909,7 @@ def _render_admin_panel(uid: int) -> tuple:
     return txt, InlineKeyboardMarkup(rows)
 
 
-async def _handle_admin_callbacks(client: Client, cb, uid: int, data: str, t: dict):
+async def _handle_admin_callbacks(cb: CallbackQuery, uid: int, data: str, t: dict):
     if data == "admin_panel":
         await safe_answer(cb)
         txt, kb = _render_admin_panel(uid)
@@ -2891,7 +2924,7 @@ async def _handle_admin_callbacks(client: Client, cb, uid: int, data: str, t: di
         await safe_edit(
             cb,
             UITheme.header(f"تحليلات الفترة: {period}", "stats") + "\n\n" + UITheme.card("stats", [f"الطلبات: <code>{st['orders']}</code> | الإيرادات: <code>${st['revenue']:.2f}</code>", f"الأكثر مبيعاً: {top_s}"]),
-            reply_markup=InlineKeyboardMarkup([
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [pbtn("اليوم", "adm_stats_today"), pbtn("الأسبوع", "adm_stats_week"), pbtn("الشهر", "adm_stats_month"), pbtn("الكل", "adm_stats_all")],
                 [pbtn(t["back"], "admin_panel", style="danger")],
             ]),
@@ -2903,7 +2936,7 @@ async def _handle_admin_callbacks(client: Client, cb, uid: int, data: str, t: di
         csv_bytes = analytics_svc.export_orders_csv()
         bio = io.BytesIO(csv_bytes)
         bio.name = f"orders_report_{datetime.now().strftime('%Y%m%d')}.csv"
-        await safe_send(client, uid, UITheme.success("تقرير المبيعات CSV", ["تم تصدير سجل الطلبات بنجاح."]), document=bio)
+        await safe_send(cb.bot, uid, UITheme.success("تقرير المبيعات CSV", ["تم تصدير سجل الطلبات بنجاح."]), document=bio)
         return
 
     if data == "adm_toggle_ai":
@@ -2920,10 +2953,10 @@ async def _handle_admin_callbacks(client: Client, cb, uid: int, data: str, t: di
         await safe_answer(cb)
         ok, path_or_err = security_svc.create_encrypted_backup()
         if not ok:
-            return await safe_edit(cb, UITheme.error("فشل النسخ الاحتياطي", [path_or_err]), reply_markup=InlineKeyboardMarkup([[pbtn(t["back"], "admin_panel", style="danger")]]))
+            return await safe_edit(cb, UITheme.error("فشل النسخ الاحتياطي", [path_or_err]), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[pbtn(t["back"], "admin_panel", style="danger")]]))
         v_ok, v_msg = security_svc.verify_and_restore_backup(path_or_err, test_only=True)
         security_svc.log_audit(uid, "backup", "create_and_verify", path_or_err, v_msg)
-        await safe_send(client, uid, UITheme.success("نسخة احتياطية مشفرة", [v_msg]), document=path_or_err)
+        await safe_send(cb.bot, uid, UITheme.success("نسخة احتياطية مشفرة", [v_msg]), document=path_or_err)
         return
 
     if data == "adm_audit_logs":
@@ -2934,7 +2967,7 @@ async def _handle_admin_callbacks(client: Client, cb, uid: int, data: str, t: di
         finally:
             conn.close()
         a_lines = [f"[{r['created_at']}] <code>{r['actor_id']}</code>: {r['category']}.{r['action']} -> {r['target']}" for r in rows] or ["لا توجد سجلات."]
-        await safe_edit(cb, UITheme.header("سجل العمليات (Audit Log)", "admin") + "\n\n" + UITheme.card("admin", a_lines), reply_markup=InlineKeyboardMarkup([[pbtn(t["back"], "admin_panel", style="danger")]]))
+        await safe_edit(cb, UITheme.header("سجل العمليات (Audit Log)", "admin") + "\n\n" + UITheme.card("admin", a_lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[pbtn(t["back"], "admin_panel", style="danger")]]))
         return
 
     if data.startswith("adm_users_mgr_"):
@@ -2958,7 +2991,7 @@ async def _handle_admin_callbacks(client: Client, cb, uid: int, data: str, t: di
         await safe_edit(
             cb,
             UITheme.header(f"المستخدم {tid}", "admin") + "\n\n" + UITheme.card("users" if False else "admin", [f"الرصيد: <code>${bal:.2f}</code>", f"الحالة: <b>{'محظور' if banned else 'نشط'}</b>"]),
-            reply_markup=InlineKeyboardMarkup([[pbtn("فك الحظر" if banned else "حظر المستخدم", f"adm_user_toggle_ban_{tid}", style="danger")], [pbtn(t["back"], "adm_users_mgr_0")]]),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[pbtn("فك الحظر" if banned else "حظر المستخدم", f"adm_user_toggle_ban_{tid}", style="danger")], [pbtn(t["back"], "adm_users_mgr_0")]]),
         )
         return
 
@@ -2967,7 +3000,7 @@ async def _handle_admin_callbacks(client: Client, cb, uid: int, data: str, t: di
         ok, msg = security_svc.set_ban(uid, tid, not security_svc.is_banned(tid))
         await safe_answer(cb, msg, alert=True)
         cb.data = f"adm_user_det_{tid}"
-        await on_callback_helper(client, cb, uid, t)
+        await on_callback_helper(cb, uid, t)
         return
 
     if data.startswith("adm_plans_mgr_"):
@@ -2988,7 +3021,7 @@ async def _handle_admin_callbacks(client: Client, cb, uid: int, data: str, t: di
         await safe_edit(
             cb,
             UITheme.header(p["name"], "products") + "\n\n" + UITheme.card("products", [f"السعر: <code>${p['price_usd']:.2f}</code>", f"المخزون: <code>{p['stock']}</code>"]),
-            reply_markup=InlineKeyboardMarkup([[pbtn("تصفير المخزون", f"adm_plan_zero_{pid}", style="danger")], [pbtn(t["back"], "adm_plans_mgr_0")]]),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[pbtn("تصفير المخزون", f"adm_plan_zero_{pid}", style="danger")], [pbtn(t["back"], "adm_plans_mgr_0")]]),
         )
         return
 
@@ -3003,7 +3036,7 @@ async def _handle_admin_callbacks(client: Client, cb, uid: int, data: str, t: di
         security_svc.log_audit(uid, "products", "zero_stock", str(pid))
         await safe_answer(cb, "تم تصفير المخزون.", alert=True)
         cb.data = f"adm_plan_det_{pid}"
-        await on_callback_helper(client, cb, uid, t)
+        await on_callback_helper(cb, uid, t)
         return
 
     if data == "adm_cats_mgr":
@@ -3024,7 +3057,7 @@ async def _handle_admin_callbacks(client: Client, cb, uid: int, data: str, t: di
             conn.close()
         await safe_answer(cb, "تم تحديث حالة القسم.", alert=True)
         cb.data = "adm_cats_mgr"
-        await on_callback_helper(client, cb, uid, t)
+        await on_callback_helper(cb, uid, t)
         return
 
     if data == "adm_coupons_mgr":
@@ -3035,13 +3068,13 @@ async def _handle_admin_callbacks(client: Client, cb, uid: int, data: str, t: di
         finally:
             conn.close()
         c_lines = [f"<code>{r['code']}</code> | {r['discount_value']} ({r['discount_type']}) | {r['used_count']}/{r['max_uses']}" for r in rows] or ["لا توجد كوبونات."]
-        await safe_edit(cb, UITheme.header("إدارة الكوبونات", "prices") + "\n\n" + UITheme.card("prices", c_lines), reply_markup=InlineKeyboardMarkup([[pbtn("إنشاء كوبون جديد", "adm_coupon_add", style="success")], [pbtn(t["back"], "admin_panel", style="danger")]]))
+        await safe_edit(cb, UITheme.header("إدارة الكوبونات", "prices") + "\n\n" + UITheme.card("prices", c_lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[pbtn("إنشاء كوبون جديد", "adm_coupon_add", style="success")], [pbtn(t["back"], "admin_panel", style="danger")]]))
         return
 
     if data == "adm_coupon_add":
         await safe_answer(cb)
         sessions.set(uid, f"adm_coupon_add_{uid}", True)
-        await safe_edit(cb, UITheme.header("إنشاء كوبون", "prices") + "\n\n" + UITheme.card("prices", ["أرسل الكوبون بالصيغة: <code>CODE | percent/fixed | القيمة | الحد</code>"]), reply_markup=InlineKeyboardMarkup([[pbtn(t["back"], "adm_coupons_mgr", style="danger")]]))
+        await safe_edit(cb, UITheme.header("إنشاء كوبون", "prices") + "\n\n" + UITheme.card("prices", ["أرسل الكوبون بالصيغة: <code>CODE | percent/fixed | القيمة | الحد</code>"]), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[pbtn(t["back"], "adm_coupons_mgr", style="danger")]]))
         return
 
     if data == "adm_pay_mgr":
@@ -3052,7 +3085,7 @@ async def _handle_admin_callbacks(client: Client, cb, uid: int, data: str, t: di
         finally:
             conn.close()
         n_lines = [f"<b>{n['network_name']}</b>: <code>{n['binance_id'] or n['address'] or '-'}</code>" for n in nets]
-        await safe_edit(cb, UITheme.header("طرق وشبكات الدفع", "payments") + "\n\n" + UITheme.card("payments", n_lines), reply_markup=InlineKeyboardMarkup([[pbtn(t["back"], "admin_panel", style="danger")]]))
+        await safe_edit(cb, UITheme.header("طرق وشبكات الدفع", "payments") + "\n\n" + UITheme.card("payments", n_lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[pbtn(t["back"], "admin_panel", style="danger")]]))
         return
 
     if data == "adm_emojis_mgr":
@@ -3074,14 +3107,14 @@ async def _handle_admin_callbacks(client: Client, cb, uid: int, data: str, t: di
         cat = data.replace("adm_emo_cat_", "")
         mapping = emoji_mgr.categories.get(cat, {})
         lines_e = [f"<code>{k}</code>: <code>{v or 'فارغ'}</code>" for k, v in mapping.items()]
-        await safe_edit(cb, UITheme.header(f"إيموجيات: {cat}", cat) + "\n\n" + UITheme.card(cat, lines_e), reply_markup=InlineKeyboardMarkup([[pbtn(t["back"], "adm_emojis_mgr", style="danger")]]))
+        await safe_edit(cb, UITheme.header(f"إيموجيات: {cat}", cat) + "\n\n" + UITheme.card(cat, lines_e), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[pbtn(t["back"], "adm_emojis_mgr", style="danger")]]))
         return
 
     if data in ("admin_add_balance", "admin_sub_balance", "admin_broadcast_msg"):
         await safe_answer(cb)
         sessions.set(uid, f"{data}_{uid}", True)
         prompt = "أرسل آيدي العميل ثم المبلغ (مثال: <code>123456 50</code>)" if "balance" in data else "أرسل نص الإذاعة العامة:"
-        await safe_edit(cb, UITheme.header("إجراء إداري", "admin") + "\n\n" + UITheme.card("admin", [prompt]), reply_markup=InlineKeyboardMarkup([[pbtn(t["back"], "admin_panel", style="danger")]]))
+        await safe_edit(cb, UITheme.header("إجراء إداري", "admin") + "\n\n" + UITheme.card("admin", [prompt]), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[pbtn(t["back"], "admin_panel", style="danger")]]))
         return
 
     if data.startswith("admin_approve_dep_"):
@@ -3090,36 +3123,36 @@ async def _handle_admin_callbacks(client: Client, cb, uid: int, data: str, t: di
         target_uid, amt = int(parts[3]), float(parts[4])
         await payment_svc.admin_adjust_wallet(uid, target_uid, amt, "admin_deposit", f"إيداع مقبول ${amt:.2f}")
         try:
-            await safe_send(client, target_uid, UITheme.success("تم شحن محفظتك", [f"تمت إضافة <code>${amt:.2f}</code> بنجاح."]))
+            await safe_send(cb.bot, target_uid, UITheme.success("تم شحن محفظتك", [f"تمت إضافة <code>${amt:.2f}</code> بنجاح."]))
         except Exception:
             pass
-        await safe_edit(cb, UITheme.success("تم القبول", [f"تم شحن <code>${amt:.2f}</code> للمستخدم <code>{target_uid}</code>."]), reply_markup=InlineKeyboardMarkup([[pbtn("لوحة الإدارة", "admin_panel")]]))
+        await safe_edit(cb, UITheme.success("تم القبول", [f"تم شحن <code>${amt:.2f}</code> للمستخدم <code>{target_uid}</code>."]), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[pbtn("لوحة الإدارة", "admin_panel")]]))
         return
 
     if data.startswith("admin_reject_dep_"):
         await safe_answer(cb)
         target_uid = int(data.split("_")[3])
         try:
-            await safe_send(client, target_uid, UITheme.error("تم رفض الإيصال", ["يرجى التواصل مع الدعم الفني."]))
+            await safe_send(cb.bot, target_uid, UITheme.error("تم رفض الإيصال", ["يرجى التواصل مع الدعم الفني."]))
         except Exception:
             pass
-        await safe_edit(cb, UITheme.warning("تم الرفض", ["تم إبلاغ المستخدم."]), reply_markup=InlineKeyboardMarkup([[pbtn("لوحة الإدارة", "admin_panel")]]))
+        await safe_edit(cb, UITheme.warning("تم الرفض", ["تم إبلاغ المستخدم."]), reply_markup=InlineKeyboardMarkup(inline_keyboard=[[pbtn("لوحة الإدارة", "admin_panel")]]))
         return
 
 
-async def on_callback_helper(client, cb, uid, t):
-    await _handle_admin_callbacks(client, cb, uid, cb.data, t)
+async def on_callback_helper(cb, uid, t):
+    await _handle_admin_callbacks(cb, uid, cb.data, t)
 
 
-async def _handle_admin_inputs(client: Client, uid: int, text: str, t: dict):
+async def _handle_admin_inputs(bot: Bot, uid: int, text: str, t: dict):
     if sessions.has(uid, f"admin_add_balance_{uid}"):
         sessions.remove(uid, f"admin_add_balance_{uid}")
         try:
             tid, amt = text.split()
             await payment_svc.admin_adjust_wallet(uid, int(tid), float(amt), "admin_deposit", "شحن إداري")
-            await safe_send(client, uid, UITheme.success("تم الشحن", [f"تمت إضافة <code>${float(amt):.2f}</code> لـ <code>{tid}</code>."]))
+            await safe_send(bot, uid, UITheme.success("تم الشحن", [f"تمت إضافة <code>${float(amt):.2f}</code> لـ <code>{tid}</code>."]))
         except Exception:
-            await safe_send(client, uid, UITheme.error("صيغة خاطئة", ["مثال: <code>123456 50</code>"]))
+            await safe_send(bot, uid, UITheme.error("صيغة خاطئة", ["مثال: <code>123456 50</code>"]))
         return
 
     if sessions.has(uid, f"admin_sub_balance_{uid}"):
@@ -3127,9 +3160,9 @@ async def _handle_admin_inputs(client: Client, uid: int, text: str, t: dict):
         try:
             tid, amt = text.split()
             await payment_svc.admin_adjust_wallet(uid, int(tid), -float(amt), "admin_withdraw", "خصم إداري")
-            await safe_send(client, uid, UITheme.success("تم الخصم", [f"تم خصم <code>${float(amt):.2f}</code> من <code>{tid}</code>."]))
+            await safe_send(bot, uid, UITheme.success("تم الخصم", [f"تم خصم <code>${float(amt):.2f}</code> من <code>{tid}</code>."]))
         except Exception:
-            await safe_send(client, uid, UITheme.error("صيغة خاطئة", ["مثال: <code>123456 20</code>"]))
+            await safe_send(bot, uid, UITheme.error("صيغة خاطئة", ["مثال: <code>123456 20</code>"]))
         return
 
     if sessions.has(uid, f"adm_coupon_add_{uid}"):
@@ -3145,9 +3178,9 @@ async def _handle_admin_inputs(client: Client, uid: int, text: str, t: dict):
                 conn.commit()
             finally:
                 conn.close()
-            await safe_send(client, uid, UITheme.success("تم إنشاء الكوبون", [f"الكود: <code>{code.upper()}</code>"]))
+            await safe_send(bot, uid, UITheme.success("تم إنشاء الكوبون", [f"الكود: <code>{code.upper()}</code>"]))
         except Exception as e:
-            await safe_send(client, uid, UITheme.error("خطأ", [str(e)]))
+            await safe_send(bot, uid, UITheme.error("خطأ", [str(e)]))
         return
 
     if sessions.has(uid, f"admin_broadcast_msg_{uid}"):
@@ -3161,23 +3194,23 @@ async def _handle_admin_inputs(client: Client, uid: int, text: str, t: dict):
         b_html = UITheme.header("إعلان رسمي من Aura eSIM", "admin", "broadcast") + "\n\n" + UITheme.card("home", [text])
         for target_u in users:
             try:
-                await safe_send(client, target_u, b_html)
+                await safe_send(bot, target_u, b_html)
                 succ += 1
                 await asyncio.sleep(0.04)
-            except FloodWait as e:
-                await asyncio.sleep(e.value)
+            except TelegramRetryAfter as e:
+                await asyncio.sleep(e.retry_after)
             except Exception:
                 fail += 1
         security_svc.log_audit(uid, "broadcast", "send_all", f"succ={succ},fail={fail}")
-        await safe_send(client, uid, UITheme.success("اكتملت الإذاعة", [f"نجاح: <code>{succ}</code> | فشل: <code>{fail}</code>"]))
+        await safe_send(bot, uid, UITheme.success("اكتملت الإذاعة", [f"نجاح: <code>{succ}</code> | فشل: <code>{fail}</code>"]))
         return
 
 
 
 # ==============================================================================
-# 23-25. Background Tasks, Startup/Shutdown & Main Execution
+# 23-25. Background Tasks, Startup/Shutdown & Main Execution (Aiogram 3)
 # ==============================================================================
-async def background_maintenance_loop(app: Client):
+async def background_maintenance_loop():
     """مهام صيانة دورية: تنظيف الجلسات المنتهية وفحص صحة القاعدة."""
     while True:
         try:
@@ -3192,37 +3225,32 @@ async def background_maintenance_loop(app: Client):
         await asyncio.sleep(1800)
 
 
-def create_app() -> Client:
-    if not API_ID or not API_HASH or not BOT_TOKEN:
-        raise RuntimeError("يرجى ضبط API_ID و API_HASH و BOT_TOKEN في ملف .env قبل تشغيل البوت.")
-    app = Client(
-        "aura_esim_pyrogram",
-        api_id=API_ID,
-        api_hash=API_HASH,
-        bot_token=BOT_TOKEN,
-        in_memory=False,
-    )
-    register_handlers(app)
-    return app
+def create_bot_and_dispatcher() -> tuple:
+    if not BOT_TOKEN:
+        raise RuntimeError("يرجى ضبط BOT_TOKEN في ملف .env قبل تشغيل البوت.")
+    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    dp = Dispatcher(storage=MemoryStorage())
+    dp.include_router(create_router())
+    return bot, dp
 
 
 async def run_bot():
-    app = create_app()
-    await app.start()
-    me = await app.get_me()
-    logger.info(f"Aura eSIM Elite (Pyrogram) started as @{me.username} | DEV_ID={DEV_ID}")
-    maint_task = asyncio.create_task(background_maintenance_loop(app))
+    bot, dp = create_bot_and_dispatcher()
+    await bot.delete_webhook(drop_pending_updates=True)
+    me = await bot.get_me()
+    logger.info(f"Aura eSIM Elite (Aiogram 3 + Colored Buttons) started as @{me.username} | DEV_ID={DEV_ID}")
+    maint_task = asyncio.create_task(background_maintenance_loop())
     try:
-        await asyncio.Event().wait()
+        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
         maint_task.cancel()
-        await app.stop()
+        await bot.session.close()
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(run_bot())
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, SystemExit):
         logger.info("Bot stopped gracefully.")
     except Exception as exc:
         logger.error(f"Startup error: {exc}")
